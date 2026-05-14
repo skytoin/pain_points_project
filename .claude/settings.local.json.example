@@ -1,0 +1,18 @@
+{
+  "_comment_1": "Copy this file to .claude/settings.local.json (drop the .example). It is gitignored.",
+  "_comment_2": "Use this for personal overrides that should NOT be shared with collaborators.",
+  "_comment_3": "Keys prefixed with _ are ignored by Claude Code; they are notes for you.",
+
+  "permissions": {
+    "_comment_mode": "To switch to auto mode (Max/Team/Enterprise/API plans only), rename _defaultMode below to defaultMode.",
+    "_defaultMode": "auto",
+
+    "_comment_allow": "Add personal-only allows here (e.g. extra MCP tools, your own shell aliases).",
+    "allow": []
+  },
+
+  "_comment_env": "Personal env vars Claude Code should see during sessions.",
+  "env": {
+    "_ANTHROPIC_LOG": "info"
+  }
+}

@@ -1,0 +1,227 @@
+[project]
+name = "discovery"
+version = "0.1.0"
+description = "Industry discovery pipeline: companies, pain signals, tools, job-task patterns."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+    { name = "Your Name", email = "you@example.com" },
+]
+
+# ----------------------------------------------------------------------
+# Runtime dependencies — grouped by purpose, matching docs/architecture.md
+# ----------------------------------------------------------------------
+dependencies = [
+    # core runtime + config
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-dotenv>=1.0",
+
+    # HTTP, retry, rate-limit
+    "httpx>=0.27",
+    "tenacity>=8.5",
+    "aiolimiter>=1.1",
+
+    # Database
+    "sqlalchemy[asyncio]>=2.0",
+    "sqlmodel>=0.0.22",
+    "aiosqlite>=0.20",
+    "alembic>=1.13",
+
+    # LLM
+    "anthropic>=0.34",
+    "instructor>=1.4",
+    "tiktoken>=0.7",
+    "diskcache>=5.6",
+
+    # Text processing & matching
+    "rapidfuzz>=3.9",
+    "python-slugify>=8.0",
+    "unidecode>=1.3",
+    "orjson>=3.10",
+    "python-dateutil>=2.9",
+
+    # Source-specific
+    "praw>=7.7",
+    "google-api-python-client>=2.0",
+    "apify-client>=1.7",
+    "feedparser>=6.0",
+
+    # Scraping fallbacks (only when an API doesn't exist)
+    "playwright>=1.45",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.2",
+    "selectolax>=0.3",
+
+    # Orchestration
+    "apscheduler>=3.10",
+
+    # CLI + logging
+    "typer>=0.12",
+    "rich>=13.7",
+    "loguru>=0.7",
+]
+
+[project.optional-dependencies]
+# Add Sentry only when you wire up error tracking; keep base install lean.
+sentry = ["sentry-sdk>=2.0"]
+
+
+# ----------------------------------------------------------------------
+# Dev dependencies — installed with `uv sync --dev`
+# ----------------------------------------------------------------------
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "pytest-vcr>=1.0",
+    "vcrpy>=6.0",
+    "mypy>=1.11",
+    "ruff>=0.6",
+    "types-python-dateutil",
+]
+
+
+# ----------------------------------------------------------------------
+# Console scripts — `uv run discovery <subcommand>` after install
+# ----------------------------------------------------------------------
+[project.scripts]
+discovery = "discovery.cli.main:app"
+
+
+# ----------------------------------------------------------------------
+# Build system — src layout
+# ----------------------------------------------------------------------
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/discovery"]
+
+
+# ----------------------------------------------------------------------
+# pytest
+# ----------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = [
+    "-x",                  # stop on first failure (fast feedback)
+    "--tb=short",          # short tracebacks
+    "--strict-markers",    # typo'd markers become errors
+    "--strict-config",
+    "-ra",                 # short summary at end
+]
+asyncio_mode = "auto"      # any async test runs in an event loop without @pytest.mark.asyncio
+filterwarnings = [
+    "error",                                  # warnings = errors in tests
+    "ignore::DeprecationWarning:google.*",    # noisy third-party libs
+    "ignore::DeprecationWarning:apify.*",
+]
+
+
+# ----------------------------------------------------------------------
+# ruff — lint + format. One tool, replaces black/isort/flake8.
+# ----------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+# Rule selections — broad on purpose. These catch a huge fraction of
+# Claude's common Python mistakes (wrong types, missing await, hallucinated
+# library calls, etc.) at lint time.
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes (unused vars, undefined names)
+    "I",      # isort (import order)
+    "B",      # bugbear (real bug patterns)
+    "C4",     # comprehensions
+    "UP",     # pyupgrade (modernize syntax)
+    "SIM",    # simplify
+    "RUF",    # ruff-specific
+    "PT",     # pytest style
+    "PTH",    # pathlib over os.path
+    "T20",    # no print statements (use logger)
+    "ASYNC",  # async best practices (catches missing awaits etc)
+    "S",      # bandit security checks
+    "TRY",    # try/except hygiene
+    "PERF",   # performance anti-patterns
+    "PL",     # pylint (selective — for refactor hints)
+    "N",      # pep8 naming
+]
+ignore = [
+    "E501",     # line length handled by formatter
+    "S101",     # asserts OK in tests
+    "PLR2004",  # magic numbers are fine in tests / config
+    "PLR0913",  # function with many args — sometimes unavoidable
+    "TRY003",   # long messages in exceptions are fine
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "PLR", "PT011"]
+"src/discovery/db/models.py" = ["N815"]   # SQLModel uses mixed-case fields sometimes
+"src/discovery/cli/*" = ["T20"]            # CLI is allowed to print via rich
+
+[tool.ruff.lint.isort]
+known-first-party = ["discovery"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+
+# ----------------------------------------------------------------------
+# mypy — strict mode. Catches the "hallucinated API" bug class.
+# ----------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+show_error_codes = true
+files = ["src/discovery"]
+
+# Third-party libs without type stubs — keep the list short
+[[tool.mypy.overrides]]
+module = [
+    "praw.*",
+    "feedparser.*",
+    "apify_client.*",
+    "selectolax.*",
+    "diskcache.*",
+    "apscheduler.*",
+]
+ignore_missing_imports = true
+
+
+# ----------------------------------------------------------------------
+# coverage
+# ----------------------------------------------------------------------
+[tool.coverage.run]
+source = ["src/discovery"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
