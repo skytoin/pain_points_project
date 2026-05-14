@@ -1,5 +1,12 @@
 # Project: discovery
 
+> **🛑 RESUMING WORK? READ [`docs/handoff.md`](docs/handoff.md) FIRST.**
+>
+> That file is the running session-handoff log: what's already built,
+> the locked-in architectural decisions (so you don't re-litigate them),
+> what's NOT built yet, and the exact spec for the next slice. It is
+> intentionally redundant with the rest of this file — start there.
+
 A data discovery pipeline that finds companies, pain signals, tools, and
 job-task patterns across an industry. Five waves of work; four LLM stations
 plus one inline LLM call inside a worker model. See `docs/architecture.md`
@@ -85,6 +92,10 @@ for the full pipeline. Read it once at the start of any non-trivial task.
   names go to a `tools_unverified` queue, not into `tools`.
 - **Prompt versions live in code.** Every prompt file exports a `VERSION`
   constant. The cache key includes it.
+- **Single-worker assumption (current).** The orchestrator runs one worker
+  process. Stuck-task recovery uses `tasks.claimed_at` alone (idle >10 min →
+  requeue). Do not add a `worker_id` column on `tasks` until a second worker
+  process is introduced — until then it would just be dead weight.
 
 ## Workflow
 
@@ -114,6 +125,9 @@ for the full pipeline. Read it once at the start of any non-trivial task.
 
 ## Memory aids
 
+- **Session handoff (read first when resuming):** `docs/handoff.md` —
+  current state, locked-in decisions, exact spec for the next slice.
+  Update it at the end of any session that ships meaningful work.
 - Architecture overview: see `docs/architecture.md`
 - Per-pattern guides: see `.claude/skills/` (loaded on demand, not every
   session)

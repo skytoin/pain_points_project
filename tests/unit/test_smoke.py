@@ -7,6 +7,7 @@ these first before debugging anything else.
 from __future__ import annotations
 
 import discovery
+from discovery.config import settings as settings_mod
 
 
 def test_package_imports() -> None:
@@ -23,12 +24,6 @@ def test_version_string_present() -> None:
 
 
 def test_settings_module_imports() -> None:
-    """The settings module imports — does NOT require .env to exist yet.
-
-    We just verify the import path resolves; we don't instantiate
-    `settings` because that would require ANTHROPIC_API_KEY to be set.
-    """
-    from discovery.config import settings as settings_mod
-
+    """The settings module exposes the `Settings` class and `get_settings` factory."""
     assert hasattr(settings_mod, "Settings")
     assert hasattr(settings_mod, "get_settings")

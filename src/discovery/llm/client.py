@@ -13,8 +13,6 @@ malformed JSON, it raises — we never silently get bad data.
 
 from __future__ import annotations
 
-from typing import TypeVar
-
 import anthropic
 import instructor
 from pydantic import BaseModel
@@ -27,32 +25,26 @@ from tenacity import (
 
 from discovery.config.settings import settings
 
-_RESP = TypeVar("_RESP", bound=BaseModel)
-
 # A single shared async client. Anthropic recommends reusing one client.
-_raw_client = anthropic.AsyncAnthropic(
-    api_key=settings.anthropic_api_key.get_secret_value()
-)
+_raw_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key.get_secret_value())
 _client = instructor.from_anthropic(_raw_client)
 
 
 @retry(
-    retry=retry_if_exception_type(
-        (anthropic.RateLimitError, anthropic.APIConnectionError)
-    ),
+    retry=retry_if_exception_type((anthropic.RateLimitError, anthropic.APIConnectionError)),
     wait=wait_exponential(multiplier=1, min=2, max=30),
     stop=stop_after_attempt(3),
     reraise=True,
 )
-async def call_llm(
+async def call_llm[Resp: BaseModel](
     *,
     system: str,
     user: str,
-    response_model: type[_RESP],
+    response_model: type[Resp],
     model: str = "claude-sonnet-4-5",
     temperature: float = 0.0,
     max_tokens: int = 4096,
-) -> _RESP:
+) -> Resp:
     """Run one LLM call with structured-output enforcement.
 
     Parameters
@@ -76,7 +68,7 @@ async def call_llm(
     -------
     The parsed Pydantic object.
     """
-    return await _client.messages.create(  # type: ignore[no-any-return]
+    return await _client.messages.create(
         model=model,
         max_tokens=max_tokens,
         temperature=temperature,

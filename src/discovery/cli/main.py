@@ -14,6 +14,9 @@ from __future__ import annotations
 import typer
 from rich.console import Console
 
+from discovery import __version__
+from discovery.cli.run import run_command
+
 app = typer.Typer(
     name="discovery",
     help="Industry discovery pipeline.",
@@ -26,8 +29,6 @@ console = Console()
 @app.command()
 def version() -> None:
     """Print the package version and exit."""
-    from discovery import __version__
-
     console.print(f"discovery [bold cyan]{__version__}[/bold cyan]")
 
 
@@ -35,6 +36,9 @@ def version() -> None:
 def hello(name: str = "world") -> None:
     """Smoke-test command — prints a greeting."""
     console.print(f"hello, [bold]{name}[/bold]")
+
+
+app.command(name="run")(run_command)
 
 
 if __name__ == "__main__":
