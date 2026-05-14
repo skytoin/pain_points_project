@@ -37,8 +37,10 @@ class RedditSource(BaseSource):
   `httpx.TimeoutException`. Do NOT retry on 4xx (except 429).
 - **Validated.** Wrap the JSON response in a Pydantic model before
   returning. Even if you don't normalize, validate the shape you got.
-- **Stored verbatim.** The raw `bytes` of the response go into
-  `raw_records.body`. Don't pre-parse.
+- **Stored verbatim.** The raw JSON body of the response goes into
+  `raw_records.body` (a JSON column). Don't pre-parse — parsing belongs
+  in Wave 2. When Playwright HTML scrapes land later this column widens
+  to `dict | str`; for now every source returns JSON.
 - **Idempotent.** Running the same `fetch` twice should not write
   duplicate rows. Use the response's natural key in the upsert.
 

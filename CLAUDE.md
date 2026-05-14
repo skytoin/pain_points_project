@@ -85,6 +85,10 @@ for the full pipeline. Read it once at the start of any non-trivial task.
   names go to a `tools_unverified` queue, not into `tools`.
 - **Prompt versions live in code.** Every prompt file exports a `VERSION`
   constant. The cache key includes it.
+- **Single-worker assumption (current).** The orchestrator runs one worker
+  process. Stuck-task recovery uses `tasks.claimed_at` alone (idle >10 min →
+  requeue). Do not add a `worker_id` column on `tasks` until a second worker
+  process is introduced — until then it would just be dead weight.
 
 ## Workflow
 

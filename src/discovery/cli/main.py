@@ -14,6 +14,8 @@ from __future__ import annotations
 import typer
 from rich.console import Console
 
+from discovery import __version__
+
 app = typer.Typer(
     name="discovery",
     help="Industry discovery pipeline.",
@@ -26,8 +28,6 @@ console = Console()
 @app.command()
 def version() -> None:
     """Print the package version and exit."""
-    from discovery import __version__
-
     console.print(f"discovery [bold cyan]{__version__}[/bold cyan]")
 
 
