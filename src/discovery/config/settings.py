@@ -40,6 +40,7 @@ class Settings(BaseSettings):
 
     # ---- LLM -------------------------------------------------------
     anthropic_api_key: SecretStr
+    openai_api_key: SecretStr | None = None
 
     # ---- Source APIs (all optional — None if not set) -------------
     reddit_client_id: SecretStr | None = None
