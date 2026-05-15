@@ -18,6 +18,7 @@ from discovery.db import models  # noqa: F401 — registers tables on metadata
 from discovery.db.engine import async_session_factory, create_engine_for
 from discovery.db.models import Task
 from discovery.jobs import JobSpec, create_job
+from discovery.llm.schemas import JobPlan, RedditQuerySpec
 from discovery.orchestrator.reddit import (
     enqueue_reddit_task_for_job,
     reddit_queries_for_spec,
@@ -112,3 +113,46 @@ class TestEnqueueRedditTaskForJob:
 
         assert t1.id != t2.id
         assert t1.content_hash != t2.content_hash
+
+
+# --- new: reads from job.job_plan when populated -----------------------------
+
+
+class TestReadsFromJobPlan:
+    async def test_uses_job_plan_queries_when_present(
+        self, session: AsyncSession
+    ) -> None:
+        """When job.job_plan is populated, the orchestrator uses those queries
+        verbatim — it does not fall through to the hand-rolled template."""
+        job = await create_job(
+            session, JobSpec(industry="cleaning", as_of=date(2026, 6, 1))
+        )
+        llm_queries = [
+            RedditQuerySpec(
+                endpoint="site_wide",
+                q=f'(subreddit:startups) AND "llm{i}"',
+                rationale="x",
+            )
+            for i in range(10)
+        ]
+        job.job_plan = JobPlan(reddit_queries=llm_queries).model_dump()
+        session.add(job)
+        await session.commit()
+
+        task = await enqueue_reddit_task_for_job(session, job)
+        assert len(task.params["queries"]) == 10
+        for q in task.params["queries"]:
+            assert '"llm' in q["q"]
+
+    async def test_falls_back_to_template_when_job_plan_null(
+        self, session: AsyncSession
+    ) -> None:
+        """No job_plan → use the existing hand-rolled template."""
+        job = await create_job(
+            session, JobSpec(industry="cleaning", as_of=date(2026, 6, 1))
+        )
+        assert job.job_plan is None
+        task = await enqueue_reddit_task_for_job(session, job)
+        assert "queries" in task.params
+        # Template queries all include the quoted industry literal.
+        assert all('"cleaning"' in q["q"] for q in task.params["queries"])
