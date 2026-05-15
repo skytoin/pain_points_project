@@ -295,6 +295,41 @@ If any fail, fix before starting the next slice.
 
 ---
 
+## Post-slice fixes (2026-05-15, after the initial Wave 0 commit)
+
+The slice was declared done at commit `e8fb355`. Live-testing
+immediately after surfaced three real issues; all fixed.
+
+- `ca0b116 fix(config): share .env across worktrees; isolate database_url`
+  — `PROJECT_ROOT` now walks up past `.claude/worktrees/<name>/` to
+  the main project root, so every worktree reads the same `.env` file
+  instead of needing its own copy of secrets. The main project happens
+  to define `DATABASE_URL` for a different app (Postgres), so
+  `Settings.database_url` is now bound via `validation_alias` to
+  `DISCOVERY_DATABASE_URL` only — the bare `DATABASE_URL` is ignored.
+- `e6692fd fix(llm): rename max_tokens → max_completion_tokens for gpt-5.x`
+  — OpenAI rejected `max_tokens` at runtime for gpt-5.4 with a 400
+  asking for `max_completion_tokens`. `call_openai` now translates at
+  the boundary; callers keep using `max_tokens=...` for parity with
+  `call_anthropic`. The two gpt-5.x parameter renames (`system →
+  developer`, `max_tokens → max_completion_tokens`) both live in
+  `call_openai` and are unit-tested.
+- `4610a88 fix(llm): add subreddit field for per_sub queries (prompt v2)`
+  — `RedditSource.fetch` requires a `subreddit` key on per_sub queries;
+  the v1 prompt told the LLM "the subreddit is implied by the endpoint"
+  but gave it no structured field to set it in. Schema now has
+  `RedditQuerySpec.subreddit: str | None` enforced by `model_validator`
+  (required on per_sub, forbidden on site_wide). Validator checks the
+  name format. Compiler passes it through. Prompt VERSION → v2.
+
+**End-to-end verified after the fixes:** `discovery run --industry
+"food truck" --location US` → gpt-5.4 produced 13 valid queries →
+Reddit pulled 11 posts into `raw_records`. Total branch state: 16
+commits ahead of `main`, 148 unit tests green, lint + format + mypy
+clean.
+
+---
+
 ## Open follow-ups (smaller, not blocking the next slice)
 
 - `run_worker_loop` + `discovery work` CLI command (drain queue
@@ -306,9 +341,6 @@ If any fail, fix before starting the next slice.
 - `pyproject.toml` formatting — `uv add` reflowed the dependency list
   and collapsed blank-line separators between sections. Cosmetic only;
   restore when convenient.
-- Run an end-to-end test with `OPENAI_API_KEY` set to confirm the
-  happy-path LLM call works against real `gpt-5.4` — current smoke
-  test only exercised the fallback path.
 - The `call_anthropic` default model is still `claude-sonnet-4-5`.
   After Wave 0's provider split landed, the default works as expected
   for any future Anthropic station; verify when adding the next one.
