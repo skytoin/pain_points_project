@@ -1,14 +1,19 @@
-"""Thin wrapper around the Anthropic SDK + `instructor`.
+"""Provider-specific LLM call wrappers.
 
-Why a wrapper:
-    - One place to set defaults (model, temperature, max_tokens)
-    - One place to attach retry / rate-limit logic
-    - One place to plug in caching
-    - Stations call `call_llm(...)` and get a Pydantic object back
+Two functions, one per provider:
 
-`instructor` is a small library that patches the Anthropic client so the
-LLM is forced to return JSON matching a Pydantic schema. If it returns
-malformed JSON, it raises — we never silently get bad data.
+    - `call_anthropic` — Messages API. `system` is a top-level param;
+      `max_tokens` is required by the SDK.
+    - `call_openai` — Chat Completions API. `system` is folded into the
+      messages array as a `developer`-role entry (gpt-5.x renamed the
+      system role; the SDK still accepts `"role": "system"` but
+      `"developer"` is the modern spelling).
+
+Both are wrapped by `instructor` so the model is forced to return JSON
+matching a Pydantic schema. If validation fails, the call raises — we
+never silently get bad data.
+
+No facade `call_llm` exists. Callers import the provider they want.
 """
 
 from __future__ import annotations
@@ -25,18 +30,22 @@ from tenacity import (
 
 from discovery.config.settings import settings
 
-# A single shared async client. Anthropic recommends reusing one client.
-_raw_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key.get_secret_value())
-_client = instructor.from_anthropic(_raw_client)
+# A single shared async Anthropic client — the SDK recommends reusing one.
+_anthropic_raw = anthropic.AsyncAnthropic(
+    api_key=settings.anthropic_api_key.get_secret_value()
+)
+_anthropic_client = instructor.from_anthropic(_anthropic_raw)
 
 
 @retry(
-    retry=retry_if_exception_type((anthropic.RateLimitError, anthropic.APIConnectionError)),
+    retry=retry_if_exception_type(
+        (anthropic.RateLimitError, anthropic.APIConnectionError)
+    ),
     wait=wait_exponential(multiplier=1, min=2, max=30),
     stop=stop_after_attempt(3),
     reraise=True,
 )
-async def call_llm[Resp: BaseModel](
+async def call_anthropic[Resp: BaseModel](
     *,
     system: str,
     user: str,
@@ -45,30 +54,12 @@ async def call_llm[Resp: BaseModel](
     temperature: float = 0.0,
     max_tokens: int = 4096,
 ) -> Resp:
-    """Run one LLM call with structured-output enforcement.
+    """Call Anthropic Messages API via instructor.
 
-    Parameters
-    ----------
-    system : str
-        The system prompt. Constant for a given station.
-    user : str
-        The rendered user message containing the batch + few-shot examples.
-    response_model : type[BaseModel]
-        A Pydantic model the response must conform to. If the LLM returns
-        anything that fails validation, an exception is raised.
-    model : str
-        Anthropic model ID. Defaults to Sonnet 4.5.
-    temperature : float
-        0.0 for deterministic classification; raise only when you want
-        variety.
-    max_tokens : int
-        Hard ceiling on response length.
-
-    Returns
-    -------
-    The parsed Pydantic object.
+    `system` is passed as Anthropic's top-level `system=` param.
+    `max_tokens` is required by the SDK.
     """
-    return await _client.messages.create(
+    return await _anthropic_client.messages.create(
         model=model,
         max_tokens=max_tokens,
         temperature=temperature,
