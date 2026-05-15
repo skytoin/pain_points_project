@@ -49,9 +49,7 @@ class TestRedditQuerySpec:
 
     def test_limit_clamped_to_1_100(self) -> None:
         with pytest.raises(ValidationError):
-            RedditQuerySpec(
-                endpoint="site_wide", q="x", limit=101, rationale="x"
-            )
+            RedditQuerySpec(endpoint="site_wide", q="x", limit=101, rationale="x")
 
 
 class TestJobPlan:

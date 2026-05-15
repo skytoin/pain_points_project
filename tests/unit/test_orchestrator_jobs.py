@@ -59,9 +59,7 @@ class TestPlanJob:
             return _valid_plan()
 
         monkeypatch.setattr(jobs_module, "run_query_expansion", _stub)
-        job = await create_job(
-            session, JobSpec(industry="cleaning", as_of=date(2026, 6, 1))
-        )
+        job = await create_job(session, JobSpec(industry="cleaning", as_of=date(2026, 6, 1)))
         assert job.job_plan is None
 
         updated = await plan_job(session, job)
@@ -76,9 +74,7 @@ class TestPlanJob:
             raise QueryExpansionError("simulated")
 
         monkeypatch.setattr(jobs_module, "run_query_expansion", _fail)
-        job = await create_job(
-            session, JobSpec(industry="cleaning", as_of=date(2026, 6, 1))
-        )
+        job = await create_job(session, JobSpec(industry="cleaning", as_of=date(2026, 6, 1)))
         updated = await plan_job(session, job)
         assert updated.job_plan is None
 
@@ -91,9 +87,7 @@ class TestPlanJob:
             raise AssertionError("station should not be called when plan exists")
 
         monkeypatch.setattr(jobs_module, "run_query_expansion", _explode)
-        job = await create_job(
-            session, JobSpec(industry="cleaning", as_of=date(2026, 6, 1))
-        )
+        job = await create_job(session, JobSpec(industry="cleaning", as_of=date(2026, 6, 1)))
         job.job_plan = _valid_plan().model_dump()
         session.add(job)
         await session.commit()

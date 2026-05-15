@@ -43,9 +43,7 @@ def fake_anthropic(monkeypatch: pytest.MonkeyPatch) -> _FakeAnthropicClient:
 
 
 class TestCallAnthropic:
-    async def test_returns_validated_pydantic(
-        self, fake_anthropic: _FakeAnthropicClient
-    ) -> None:
+    async def test_returns_validated_pydantic(self, fake_anthropic: _FakeAnthropicClient) -> None:
         result = await call_anthropic(
             system="sys",
             user="usr",
@@ -70,9 +68,7 @@ class TestCallAnthropic:
         assert call["system"] == "you are a calculator"
         assert call["messages"] == [{"role": "user", "content": "2+2?"}]
 
-    async def test_passes_max_tokens(
-        self, fake_anthropic: _FakeAnthropicClient
-    ) -> None:
+    async def test_passes_max_tokens(self, fake_anthropic: _FakeAnthropicClient) -> None:
         await call_anthropic(
             system="sys",
             user="usr",

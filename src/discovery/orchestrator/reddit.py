@@ -86,8 +86,7 @@ def _queries_from_job_plan(job: Job) -> list[dict[str, Any]] | None:
         plan = JobPlan.model_validate(job.job_plan)
     except Exception as e:
         logger.warning(
-            "job {} has a job_plan that fails validation ({}); "
-            "falling back to template.",
+            "job {} has a job_plan that fails validation ({}); falling back to template.",
             job.id,
             e,
         )

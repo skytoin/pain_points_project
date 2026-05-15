@@ -45,8 +45,7 @@ def _check_uppercase_operators(q_stripped: str, errors: list[str]) -> None:
     # (which would mean it's part of another word like "factor" or "android").
     if re.search(r"(?<![A-Za-z])(or|and)(?![A-Za-z])", q_stripped):
         errors.append(
-            "Reddit operators OR/AND must be uppercase outside of quoted "
-            "phrases (skill item 6)."
+            "Reddit operators OR/AND must be uppercase outside of quoted phrases (skill item 6)."
         )
 
 
@@ -63,15 +62,12 @@ def _check_subreddit_names(q: str, errors: list[str]) -> None:
         name = match.group(1)
         if not _VALID_SUBREDDIT.match(name):
             errors.append(
-                f"Invalid subreddit name '{name}' (skill item 10: "
-                f"3-21 chars, [A-Za-z0-9_])."
+                f"Invalid subreddit name '{name}' (skill item 10: 3-21 chars, [A-Za-z0-9_])."
             )
 
     # Catches `subreddit:Small Business` - a `subreddit:` token whose
     # next sibling token is a bare word, not an operator/paren/quote.
-    multi_word_pattern = re.compile(
-        r"subreddit:\S+\s+(?!(?:OR|AND)\b)([A-Za-z][^\s\)\"]*)"
-    )
+    multi_word_pattern = re.compile(r"subreddit:\S+\s+(?!(?:OR|AND)\b)([A-Za-z][^\s\)\"]*)")
     for m in multi_word_pattern.finditer(q):
         bare = m.group(1)
         errors.append(
@@ -81,9 +77,7 @@ def _check_subreddit_names(q: str, errors: list[str]) -> None:
         )
 
 
-def _check_endpoint_subreddit_count(
-    spec: RedditQuerySpec, errors: list[str]
-) -> None:
+def _check_endpoint_subreddit_count(spec: RedditQuerySpec, errors: list[str]) -> None:
     """Skill items 7 (cap site_wide at ~6) and 16 (per_sub uses endpoint)."""
     sub_count = len(re.findall(r"\bsubreddit:", spec.q))
     if spec.endpoint == "per_sub" and sub_count > 0:

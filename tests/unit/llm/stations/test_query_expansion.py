@@ -40,9 +40,7 @@ def _valid_plan() -> JobPlan:
 
 
 @pytest.fixture
-def tmp_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[Cache]:
+def tmp_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Cache]:
     """Point the station's cache at a temp dir for each test."""
     cache = make_cache(tmp_path / "cache")
     monkeypatch.setattr(station, "_cache", cache)

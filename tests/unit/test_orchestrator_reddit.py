@@ -119,14 +119,10 @@ class TestEnqueueRedditTaskForJob:
 
 
 class TestReadsFromJobPlan:
-    async def test_uses_job_plan_queries_when_present(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_uses_job_plan_queries_when_present(self, session: AsyncSession) -> None:
         """When job.job_plan is populated, the orchestrator uses those queries
         verbatim — it does not fall through to the hand-rolled template."""
-        job = await create_job(
-            session, JobSpec(industry="cleaning", as_of=date(2026, 6, 1))
-        )
+        job = await create_job(session, JobSpec(industry="cleaning", as_of=date(2026, 6, 1)))
         llm_queries = [
             RedditQuerySpec(
                 endpoint="site_wide",
@@ -144,13 +140,9 @@ class TestReadsFromJobPlan:
         for q in task.params["queries"]:
             assert '"llm' in q["q"]
 
-    async def test_falls_back_to_template_when_job_plan_null(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_falls_back_to_template_when_job_plan_null(self, session: AsyncSession) -> None:
         """No job_plan → use the existing hand-rolled template."""
-        job = await create_job(
-            session, JobSpec(industry="cleaning", as_of=date(2026, 6, 1))
-        )
+        job = await create_job(session, JobSpec(industry="cleaning", as_of=date(2026, 6, 1)))
         assert job.job_plan is None
         task = await enqueue_reddit_task_for_job(session, job)
         assert "queries" in task.params

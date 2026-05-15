@@ -48,9 +48,7 @@ def fake_openai(monkeypatch: pytest.MonkeyPatch) -> _FakeOpenAIClient:
 
 
 class TestCallOpenAI:
-    async def test_returns_validated_pydantic(
-        self, fake_openai: _FakeOpenAIClient
-    ) -> None:
+    async def test_returns_validated_pydantic(self, fake_openai: _FakeOpenAIClient) -> None:
         result = await call_openai(
             system="sys",
             user="usr",
@@ -77,9 +75,7 @@ class TestCallOpenAI:
             {"role": "user", "content": "hi"},
         ]
 
-    async def test_passes_model_and_temperature(
-        self, fake_openai: _FakeOpenAIClient
-    ) -> None:
+    async def test_passes_model_and_temperature(self, fake_openai: _FakeOpenAIClient) -> None:
         await call_openai(
             system="s",
             user="u",
@@ -94,9 +90,7 @@ class TestCallOpenAI:
 
 
 class TestLazyClient:
-    def test_raises_when_api_key_missing(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_raises_when_api_key_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """If openai_api_key is None, building the client raises a clear
         error so the station can fall back."""
         monkeypatch.setattr(client_module, "_openai_singletons", {})
@@ -106,9 +100,7 @@ class TestLazyClient:
 
     def test_uses_api_key_when_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(client_module, "_openai_singletons", {})
-        monkeypatch.setattr(
-            client_module.settings, "openai_api_key", SecretStr("sk-test")
-        )
+        monkeypatch.setattr(client_module.settings, "openai_api_key", SecretStr("sk-test"))
         # Should not raise.
         c = client_module._get_openai_client()
         assert c is not None

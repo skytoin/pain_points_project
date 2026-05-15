@@ -107,3 +107,27 @@ mass classification (Pain Signal, Job-Task), Sonnet or Haiku is plenty.
 
 If you switch models, the cache key changes and re-runs cost full price
 again. Decide before you process a million rows.
+
+## Per-station provider and tuning
+
+The default stack is Anthropic Sonnet at temperature 0. Individual
+stations may deviate when there is a clear reason, documented inside
+the station module and called out here:
+
+| Station          | Provider  | Model        | Temperature | Why                                                         |
+|------------------|-----------|--------------|-------------|-------------------------------------------------------------|
+| Query Expansion  | OpenAI    | gpt-5.4      | 0.2         | Brainstorming creative queries; 0 just echoes few-shot      |
+| (others)         | Anthropic | sonnet-4-5   | 0           | Default                                                     |
+
+Rules:
+
+- Bump the prompt VERSION when you change the model OR the temperature.
+  The cache key includes both indirectly via the prompt module's
+  behavior — bumping VERSION forces fresh calls so a subtle behavior
+  shift doesn't silently re-use stale cached output.
+- The `call_<provider>` function you import determines the provider.
+  No generic `call_llm` dispatcher exists; pick a side and import the
+  specific function (`call_anthropic` or `call_openai`).
+- A station's deviation must be a deliberate decision, not a typo. New
+  stations should justify any deviation from `(anthropic, sonnet, 0)`
+  in their module docstring.

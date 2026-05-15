@@ -34,9 +34,7 @@ from tenacity import (
 from discovery.config.settings import settings
 
 # A single shared async Anthropic client — the SDK recommends reusing one.
-_anthropic_raw = anthropic.AsyncAnthropic(
-    api_key=settings.anthropic_api_key.get_secret_value()
-)
+_anthropic_raw = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key.get_secret_value())
 _anthropic_client = instructor.from_anthropic(_anthropic_raw)
 
 
@@ -67,9 +65,7 @@ def _get_openai_client() -> Any:
 
 
 @retry(
-    retry=retry_if_exception_type(
-        (anthropic.RateLimitError, anthropic.APIConnectionError)
-    ),
+    retry=retry_if_exception_type((anthropic.RateLimitError, anthropic.APIConnectionError)),
     wait=wait_exponential(multiplier=1, min=2, max=30),
     stop=stop_after_attempt(3),
     reraise=True,
@@ -99,9 +95,7 @@ async def call_anthropic[Resp: BaseModel](
 
 
 @retry(
-    retry=retry_if_exception_type(
-        (openai.RateLimitError, openai.APIConnectionError)
-    ),
+    retry=retry_if_exception_type((openai.RateLimitError, openai.APIConnectionError)),
     wait=wait_exponential(multiplier=1, min=2, max=30),
     stop=stop_after_attempt(3),
     reraise=True,

@@ -24,9 +24,7 @@ def _spec(q: str, endpoint: str = "site_wide", **kw: Any) -> RedditQuerySpec:
 
 class TestValidateRedditQuery:
     def test_well_formed_query_has_no_errors(self) -> None:
-        spec = _spec(
-            '(subreddit:startups OR subreddit:smallbusiness) AND "I would pay"'
-        )
+        spec = _spec('(subreddit:startups OR subreddit:smallbusiness) AND "I would pay"')
         assert validate_reddit_query(spec) == []
 
     def test_lowercase_or_is_flagged_skill_item_6(self) -> None:
@@ -70,9 +68,7 @@ class TestValidateRedditQuery:
 
     def test_word_or_inside_a_quoted_phrase_is_not_flagged(self) -> None:
         """`"oranges"` contains the substring 'or' - we must not false-positive."""
-        spec = _spec(
-            '(subreddit:cooking OR subreddit:food) AND "oranges or apples"'
-        )
+        spec = _spec('(subreddit:cooking OR subreddit:food) AND "oranges or apples"')
         # The `or` inside the quoted phrase isn't an operator. Should be valid.
         errors = validate_reddit_query(spec)
         assert errors == [], f"unexpected errors: {errors}"

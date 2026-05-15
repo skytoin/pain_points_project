@@ -74,9 +74,7 @@ async def run_query_expansion(spec: JobSpec) -> JobPlan:
             temperature=TEMPERATURE,
         )
     except Exception as e:
-        raise QueryExpansionError(
-            f"LLM call failed: {type(e).__name__}: {e}"
-        ) from e
+        raise QueryExpansionError(f"LLM call failed: {type(e).__name__}: {e}") from e
 
     filtered_plan = _drop_invalid_queries(raw_plan)
     if len(filtered_plan.reddit_queries) < MIN_VALID_QUERIES:
@@ -101,9 +99,7 @@ def _drop_invalid_queries(plan: JobPlan) -> JobPlan:
     for q in plan.reddit_queries:
         errors = validate_reddit_query(q)
         if errors:
-            logger.warning(
-                "dropping invalid LLM query: errors={} q={!r}", errors, q.q
-            )
+            logger.warning("dropping invalid LLM query: errors={} q={!r}", errors, q.q)
             continue
         kept.append(q)
     return JobPlan.model_construct(
