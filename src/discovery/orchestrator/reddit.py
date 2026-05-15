@@ -98,14 +98,20 @@ def _compile_query(spec: RedditQuerySpec) -> dict[str, Any]:
     """Compile a `RedditQuerySpec` into the dict shape `RedditSource.fetch`
     accepts. The LLM has already filled `q`; validation has already
     dropped invalid ones; this is just shape conversion.
+
+    `RedditSource.fetch` requires a `subreddit` key for per_sub queries;
+    site_wide queries should not have one.
     """
-    return {
+    out: dict[str, Any] = {
         "endpoint": spec.endpoint,
         "q": spec.q,
         "sort": spec.sort,
         "t": spec.t,
         "limit": spec.limit,
     }
+    if spec.subreddit is not None:
+        out["subreddit"] = spec.subreddit
+    return out
 
 
 async def enqueue_reddit_task_for_job(session: AsyncSession, job: Job) -> Task:

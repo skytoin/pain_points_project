@@ -29,6 +29,7 @@ def validate_reddit_query(spec: RedditQuerySpec) -> list[str]:
     _check_uppercase_operators(q_stripped, errors)
     _check_subreddit_names(spec.q, errors)
     _check_endpoint_subreddit_count(spec, errors)
+    _check_subreddit_field(spec, errors)
 
     return errors
 
@@ -74,6 +75,20 @@ def _check_subreddit_names(q: str, errors: list[str]) -> None:
             f"Bare word '{bare}' follows a subreddit: clause - looks like "
             f"a multi-word subreddit name attempt; Reddit names cannot "
             f"contain spaces (skill item 10)."
+        )
+
+
+def _check_subreddit_field(spec: RedditQuerySpec, errors: list[str]) -> None:
+    """For per_sub queries, the dedicated `subreddit` value (not the q
+    string) must itself be a valid Reddit sub name (skill item 10)."""
+    if (
+        spec.endpoint == "per_sub"
+        and spec.subreddit is not None
+        and not _VALID_SUBREDDIT.match(spec.subreddit)
+    ):
+        errors.append(
+            f"Invalid `subreddit` value '{spec.subreddit}' for "
+            f"per_sub query (skill item 10: 3-21 chars, [A-Za-z0-9_])."
         )
 
 

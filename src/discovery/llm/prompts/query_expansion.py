@@ -13,6 +13,9 @@ stay in cache but are no longer hit (a fresh call is forced).
 Versioning:
     v1 — initial release. gpt-5.4, 10-15 reddit_queries, structured
     `RedditQuerySpec` with rationale-per-query.
+    v2 — added required `subreddit` field on per_sub queries (Reddit
+    adapter needs the target sub as a structured value, not only
+    mentioned in the rationale text).
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from typing import Any
 
 from discovery.jobs import JobSpec
 
-VERSION: str = "v1"
+VERSION: str = "v2"
 
 
 SYSTEM_PROMPT: str = """\
@@ -40,12 +43,14 @@ be executed against Reddit's search API.
 You can search site-wide or scope to a single subreddit. The two endpoints
 correspond to the `endpoint` field on each query you emit:
 
-- `per_sub` — searches inside one specific subreddit. The query string
-  should NOT include a `subreddit:` clause; the subreddit is implied
-  by the endpoint. Use this for high-value niche subs.
-- `site_wide` — searches across all of Reddit. The query string MUST
-  include one or more `subreddit:NAME` clauses joined with `OR` to
-  scope the search; otherwise you'll get noise from all of Reddit.
+- `per_sub` — searches inside one specific subreddit. Set the
+  `subreddit` field to the target sub name (no `r/` prefix). The
+  query string `q` should NOT include a `subreddit:` clause. Use
+  this for high-value niche subs.
+- `site_wide` — searches across all of Reddit. Leave the `subreddit`
+  field unset (null). The query string `q` MUST include one or more
+  `subreddit:NAME` clauses joined with `OR` to scope the search;
+  otherwise you'll get noise from all of Reddit.
 
 # Reddit search query syntax — the rules you MUST follow
 
@@ -98,7 +103,9 @@ phrase lists; you'll lose generality.
 
 For each query, you choose:
 
-- Which subreddits to scope to (1 for per_sub; 1-6 for site_wide)
+- Endpoint (`per_sub` or `site_wide`)
+- For `per_sub`: the single target subreddit (set the `subreddit` field)
+- For `site_wide`: the 1-6 subreddits listed inside the `q` string
 - Which pain category and variants to OR together
 - Whether to anchor on the industry literal (e.g. `"commercial cleaning"`)
 
@@ -107,8 +114,9 @@ For each query, you choose:
 You will emit a JSON object validated as `JobPlan` with two fields:
 
 - `reddit_queries` — between 10 and 15 `RedditQuerySpec` objects.
-  Each has `endpoint`, `q`, `sort`, `t`, `limit`, and a one-sentence
-  `rationale` explaining why this query is worth running.
+  Each has `endpoint`, `q`, `subreddit` (set for per_sub only),
+  `sort`, `t`, `limit`, and a one-sentence `rationale` explaining
+  why this query is worth running.
 - `reddit_subreddits` — your shortlist of domain-relevant subreddits
   (without the `r/` prefix). Up to ~12. These complement the queries
   themselves; Python code may use this list to seed per-sub queries
@@ -139,11 +147,15 @@ signals on documentation tools" beats "looking for pain".
 """
 
 
-def _example_queries(qs: list[tuple[str, str, str]]) -> list[dict[str, Any]]:
+def _example_queries(
+    qs: list[tuple[str, str | None, str, str]],
+) -> list[dict[str, Any]]:
     """Helper to build a list of 10+ valid RedditQuerySpec-shaped dicts
-    from compact tuples (endpoint, q, rationale)."""
-    return [
-        {
+    from compact tuples `(endpoint, subreddit_or_None, q, rationale)`.
+    Sets `subreddit` only for per_sub queries; site_wide omits it."""
+    out: list[dict[str, Any]] = []
+    for endpoint, subreddit, q, rationale in qs:
+        entry: dict[str, Any] = {
             "endpoint": endpoint,
             "q": q,
             "sort": "top",
@@ -151,8 +163,10 @@ def _example_queries(qs: list[tuple[str, str, str]]) -> list[dict[str, Any]]:
             "limit": 100,
             "rationale": rationale,
         }
-        for endpoint, q, rationale in qs
-    ]
+        if subreddit is not None:
+            entry["subreddit"] = subreddit
+        out.append(entry)
+    return out
 
 
 FEW_SHOT_EXAMPLES: list[dict[str, Any]] = [
@@ -168,51 +182,61 @@ FEW_SHOT_EXAMPLES: list[dict[str, Any]] = [
                 [
                     (
                         "site_wide",
+                        None,
                         '(subreddit:smallbusiness OR subreddit:Entrepreneur OR subreddit:startups) AND "commercial cleaning" AND ("I would pay" OR "I\'d pay" OR "would pay for")',
                         "Cross-sub willingness-to-pay scan anchored on the industry literal; baseline business subs.",
                     ),
                     (
                         "per_sub",
+                        "CleaningTips",
                         '"commercial cleaning" AND ("frustrated with" OR "fed up with" OR "tired of")',
                         "Scoped to r/CleaningTips for frustration signals from actual practitioners.",
                     ),
                     (
                         "site_wide",
+                        None,
                         '(subreddit:Janitorial OR subreddit:OfficeCleaners) AND ("wish there was" OR "wish someone would")',
                         "Unmet-need scan inside janitorial-focused subs.",
                     ),
                     (
                         "site_wide",
+                        None,
                         '(subreddit:smallbusiness OR subreddit:Entrepreneur) AND "cleaning business" AND ("alternative to" OR "replacement for")',
                         "Picks up posts looking to swap out their current cleaning vendor or tool.",
                     ),
                     (
                         "site_wide",
+                        None,
                         '(subreddit:startups OR subreddit:microsaas) AND "cleaning" AND ("built a tool" OR "made a tool")',
                         "Builder signals — devs who've built something cleaning-adjacent worth studying.",
                     ),
                     (
                         "per_sub",
+                        "Janitorial",
                         '"commercial cleaning" AND ("switched from" OR "moving away from")',
                         "Scoped to r/Janitorial for switching signals between vendors/products.",
                     ),
                     (
                         "site_wide",
+                        None,
                         '(subreddit:smallbusiness OR subreddit:Entrepreneur) AND ("why is there no" OR "why does no one") AND "cleaning"',
                         "Market-gap questions — explicit articulations of what doesn't exist yet.",
                     ),
                     (
                         "site_wide",
+                        None,
                         '(subreddit:OfficeCleaners OR subreddit:CleaningTips) AND ("shut down" OR "killed off")',
                         "Dead-competitor signals — recent failures point to attempts and missed needs.",
                     ),
                     (
                         "per_sub",
+                        "smallbusiness",
                         '("scheduling" OR "billing" OR "payroll") AND ("frustrated with" OR "tired of")',
                         "Inside r/smallbusiness — operational pain points cleaners actually run into.",
                     ),
                     (
                         "site_wide",
+                        None,
                         '(subreddit:Entrepreneur OR subreddit:smallbusiness OR subreddit:startups) AND "janitorial" AND ("I would pay" OR "would pay for")',
                         "Second willingness-to-pay scan using the synonym 'janitorial' to catch posts using different terminology.",
                     ),
@@ -234,51 +258,61 @@ FEW_SHOT_EXAMPLES: list[dict[str, Any]] = [
                 [
                     (
                         "site_wide",
+                        None,
                         '(subreddit:gamedev OR subreddit:IndieDev OR subreddit:Unity3D) AND ("wish there was" OR "wish someone would")',
                         "Unmet-need scan across the three biggest indie gamedev subs.",
                     ),
                     (
                         "per_sub",
+                        "gamedev",
                         '("I would pay" OR "I\'d pay" OR "would pay for")',
                         "Inside r/gamedev — willingness-to-pay signals for tools.",
                     ),
                     (
                         "site_wide",
+                        None,
                         '(subreddit:gamedev OR subreddit:Godot) AND ("frustrated with" OR "fed up with")',
                         "Frustration in gamedev + Godot specifically — engine-side pain points.",
                     ),
                     (
                         "site_wide",
+                        None,
                         '(subreddit:IndieDev OR subreddit:gamedesign) AND ("alternative to" OR "replacement for")',
                         "Tooling alternatives inside design-focused subs.",
                     ),
                     (
                         "site_wide",
+                        None,
                         '(subreddit:gamedev OR subreddit:Unity3D OR subreddit:Unreal) AND ("built a tool" OR "made a tool")',
                         "Builder signals across the three major engine subs.",
                     ),
                     (
                         "per_sub",
+                        "gamedev",
                         '("switched from" OR "moving away from") AND ("Unity" OR "Unreal" OR "Godot")',
                         "Engine-switching narratives inside r/gamedev.",
                     ),
                     (
                         "site_wide",
+                        None,
                         '(subreddit:gamedev OR subreddit:IndieDev) AND ("why is there no" OR "why does no one")',
                         "Market-gap questions in indie gamedev.",
                     ),
                     (
                         "site_wide",
+                        None,
                         '(subreddit:gamedev OR subreddit:Godot OR subreddit:Unity3D) AND ("shut down" OR "killed off")',
                         "Dead-tool / dead-engine-feature signals.",
                     ),
                     (
                         "site_wide",
+                        None,
                         '(subreddit:IndieDev OR subreddit:gamedev) AND ("marketing" OR "wishlist") AND ("frustrated with" OR "tired of")',
                         "Marketing-specific pain — the #1 indie complaint after engine pain.",
                     ),
                     (
                         "per_sub",
+                        "gamedev",
                         '("playtest" OR "QA") AND ("wish there was" OR "wish someone would")',
                         "Inside r/gamedev — pre-release feedback pain.",
                     ),

@@ -40,25 +40,17 @@ class TestDatabaseUrl:
     our SQLite default.
     """
 
-    def test_bare_database_url_is_ignored(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_bare_database_url_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-        monkeypatch.setenv(
-            "DATABASE_URL", "postgresql://someone:secret@host/db"
-        )
+        monkeypatch.setenv("DATABASE_URL", "postgresql://someone:secret@host/db")
         monkeypatch.delenv("DISCOVERY_DATABASE_URL", raising=False)
         s = Settings(_env_file=None)  # type: ignore[call-arg]
         # Default kicks in; the Postgres URL is ignored.
         assert s.database_url.startswith("sqlite")
 
-    def test_discovery_database_url_is_used(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_discovery_database_url_is_used(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-        monkeypatch.setenv(
-            "DISCOVERY_DATABASE_URL", "sqlite+aiosqlite:///custom.db"
-        )
+        monkeypatch.setenv("DISCOVERY_DATABASE_URL", "sqlite+aiosqlite:///custom.db")
         s = Settings(_env_file=None)  # type: ignore[call-arg]
         assert s.database_url == "sqlite+aiosqlite:///custom.db"
 

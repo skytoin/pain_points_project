@@ -81,3 +81,41 @@ class TestJobPlan:
     def test_reddit_subreddits_defaults_to_empty(self) -> None:
         plan = JobPlan(reddit_queries=[_good_query() for _ in range(10)])
         assert plan.reddit_subreddits == []
+
+
+class TestRedditQuerySpecSubreddit:
+    """`subreddit` field is required for per_sub endpoint and forbidden
+    for site_wide (where subreddit clauses live inside `q`).
+    """
+
+    def test_per_sub_requires_subreddit(self) -> None:
+        with pytest.raises(ValidationError):
+            RedditQuerySpec(endpoint="per_sub", q='"x"', rationale="r")
+
+    def test_per_sub_with_subreddit_validates(self) -> None:
+        spec = RedditQuerySpec(
+            endpoint="per_sub",
+            q='"frustrated with"',
+            subreddit="WeddingPhotography",
+            rationale="r",
+        )
+        assert spec.subreddit == "WeddingPhotography"
+
+    def test_site_wide_must_not_set_subreddit(self) -> None:
+        """site_wide queries put subreddit clauses inside `q`; the dedicated
+        field is reserved for per_sub."""
+        with pytest.raises(ValidationError):
+            RedditQuerySpec(
+                endpoint="site_wide",
+                q='(subreddit:a) AND "x"',
+                subreddit="WeddingPhotography",
+                rationale="r",
+            )
+
+    def test_site_wide_with_subreddit_none_validates(self) -> None:
+        spec = RedditQuerySpec(
+            endpoint="site_wide",
+            q='(subreddit:a) AND "x"',
+            rationale="r",
+        )
+        assert spec.subreddit is None

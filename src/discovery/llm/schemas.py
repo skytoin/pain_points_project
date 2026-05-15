@@ -21,9 +21,9 @@ because Reddit is the only source built so far.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class RedditQuerySpec(BaseModel):
@@ -42,6 +42,15 @@ class RedditQuerySpec(BaseModel):
 
     endpoint: Literal["per_sub", "site_wide"]
     q: str = Field(min_length=1, max_length=3900)
+    subreddit: str | None = Field(
+        default=None,
+        description=(
+            "Required for endpoint='per_sub' — the single subreddit to "
+            "scope into (no `r/` prefix). Must be None for "
+            "endpoint='site_wide' (where subreddit clauses live inside "
+            "the `q` string)."
+        ),
+    )
     sort: Literal["top", "hot", "new"] = "top"
     t: Literal["hour", "day", "week", "month", "year", "all"] = "month"
     limit: int = Field(default=100, ge=1, le=100)
@@ -53,6 +62,20 @@ class RedditQuerySpec(BaseModel):
             "bad plans."
         ),
     )
+
+    @model_validator(mode="after")
+    def _check_subreddit_matches_endpoint(self) -> Self:
+        if self.endpoint == "per_sub" and self.subreddit is None:
+            raise ValueError(
+                "per_sub queries require a `subreddit` value "
+                "(the single sub the endpoint scopes into)."
+            )
+        if self.endpoint == "site_wide" and self.subreddit is not None:
+            raise ValueError(
+                "site_wide queries must not set `subreddit` — list "
+                "subreddits inside `q` with subreddit:NAME clauses."
+            )
+        return self
 
 
 class JobPlan(BaseModel):

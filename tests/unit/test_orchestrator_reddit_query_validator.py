@@ -14,6 +14,10 @@ from discovery.orchestrator.reddit_query_validator import validate_reddit_query
 
 
 def _spec(q: str, endpoint: str = "site_wide", **kw: Any) -> RedditQuerySpec:
+    # per_sub queries need a subreddit; default to a valid one unless
+    # the test caller explicitly overrides it.
+    if endpoint == "per_sub" and "subreddit" not in kw:
+        kw["subreddit"] = "startups"
     return RedditQuerySpec(
         endpoint=endpoint,  # type: ignore[arg-type]
         q=q,
@@ -59,6 +63,26 @@ class TestValidateRedditQuery:
         spec = _spec('subreddit:a AND "x"', endpoint="per_sub")
         errors = validate_reddit_query(spec)
         assert any("per_sub" in e.lower() for e in errors)
+
+    def test_per_sub_with_invalid_subreddit_field_is_flagged(self) -> None:
+        """The `subreddit` value itself must match the [A-Za-z0-9_]{3,21} rule."""
+        spec = _spec(
+            '"frustrated with"',
+            endpoint="per_sub",
+            subreddit="my-sub",  # hyphen is invalid
+        )
+        errors = validate_reddit_query(spec)
+        flat = " ".join(e.lower() for e in errors)
+        assert "subreddit" in flat
+        assert "my-sub" in flat
+
+    def test_per_sub_with_valid_subreddit_field_passes(self) -> None:
+        spec = _spec(
+            '"frustrated with"',
+            endpoint="per_sub",
+            subreddit="WeddingPhotography",
+        )
+        assert validate_reddit_query(spec) == []
 
     def test_site_wide_must_have_at_least_one_subreddit_clause(self) -> None:
         spec = _spec('"phrase only, no subreddit"', endpoint="site_wide")
