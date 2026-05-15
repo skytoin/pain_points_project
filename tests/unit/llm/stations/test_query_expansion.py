@@ -164,3 +164,96 @@ class TestFallbackOnTooFewValidQueries:
         monkeypatch.setattr(station, "call_openai", _stub_llm)
         with pytest.raises(QueryExpansionError):
             await run_query_expansion(spec)
+
+
+class TestTimeWindowOverride:
+    """Skill item 11: every query's `t` field is forced to match the
+    spec's chosen `time_window`. Belt-and-suspenders — the LLM is told
+    in the prompt, but we override too in case it slips.
+    """
+
+    async def test_forces_year_on_every_query(
+        self,
+        tmp_cache: Cache,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        year_spec = JobSpec(
+            industry="x", as_of=date(2026, 6, 1), time_window="year"
+        )
+        # LLM returns queries with mixed `t` values — we should clobber them.
+        mixed = [
+            RedditQuerySpec(
+                endpoint="site_wide",
+                q=f'(subreddit:startups) AND "q{i}"',
+                rationale=f"r{i}",
+                t=("month" if i % 2 else "week"),  # type: ignore[arg-type]
+            )
+            for i in range(10)
+        ]
+
+        async def _stub_llm(**kwargs: Any) -> JobPlan:
+            return JobPlan(reddit_queries=mixed)
+
+        monkeypatch.setattr(station, "call_openai", _stub_llm)
+        result = await run_query_expansion(year_spec)
+        assert {q.t for q in result.reddit_queries} == {"year"}
+
+
+class TestBaselineSubredditMerge:
+    """Skill item 9: always merge LLM-picked subs with the profile-agnostic
+    baseline (`r/startups`, `r/microsaas`, `r/smallbusiness`). Defense in
+    depth — even if the LLM picks bad subs the baseline keeps the adapter
+    useful.
+    """
+
+    async def test_merges_baseline_subs_into_plan(
+        self,
+        tmp_cache: Cache,
+        spec: JobSpec,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # LLM picks only domain-specific subs; baseline should be added.
+        plan = JobPlan(
+            reddit_queries=[_valid_query(f"q{i}") for i in range(10)],
+            reddit_subreddits=["doggrooming", "groomers", "petbusiness"],
+        )
+
+        async def _stub_llm(**kwargs: Any) -> JobPlan:
+            return plan
+
+        monkeypatch.setattr(station, "call_openai", _stub_llm)
+        result = await run_query_expansion(spec)
+
+        for baseline in ("startups", "microsaas", "smallbusiness"):
+            assert baseline in result.reddit_subreddits, (
+                f"missing baseline sub {baseline!r}"
+            )
+        # LLM picks come first, baselines appended after
+        assert result.reddit_subreddits[:3] == [
+            "doggrooming",
+            "groomers",
+            "petbusiness",
+        ]
+
+    async def test_does_not_duplicate_baseline_when_llm_already_picked_it(
+        self,
+        tmp_cache: Cache,
+        spec: JobSpec,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If the LLM already picked `smallbusiness`, it should appear once."""
+        plan = JobPlan(
+            reddit_queries=[_valid_query(f"q{i}") for i in range(10)],
+            reddit_subreddits=["smallbusiness", "Entrepreneur", "wholesale"],
+        )
+
+        async def _stub_llm(**kwargs: Any) -> JobPlan:
+            return plan
+
+        monkeypatch.setattr(station, "call_openai", _stub_llm)
+        result = await run_query_expansion(spec)
+        # Count occurrences of smallbusiness — should be exactly 1
+        assert result.reddit_subreddits.count("smallbusiness") == 1
+        # Other baselines should still be appended
+        assert "startups" in result.reddit_subreddits
+        assert "microsaas" in result.reddit_subreddits

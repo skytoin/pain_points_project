@@ -20,7 +20,7 @@ Public surface
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import select
@@ -49,6 +49,15 @@ class JobSpec(BaseModel):
     as_of: date
     location: str | None = None
     size: str | None = None
+    time_window: Literal["hour", "day", "week", "month", "year", "all"] = Field(
+        default="month",
+        description=(
+            "Reddit's `t` parameter — how far back the LLM-built queries "
+            "should search. Default `month` is fine for active topics; "
+            "use `year` for niche / B2B topics where a month doesn't "
+            "produce enough signal (skill item 11)."
+        ),
+    )
 
 
 async def create_job(session: AsyncSession, spec: JobSpec | dict[str, Any]) -> Job:

@@ -58,3 +58,16 @@ class TestBuildUserMessage:
         msg = qe.build_user_message(spec)
         assert "bakery" in msg
         assert "None" not in msg
+
+    def test_includes_time_window(self) -> None:
+        """The LLM is told the search-window choice so it can match it
+        in each query's `t` field."""
+        spec = JobSpec(
+            industry="x", as_of=date(2026, 6, 1), time_window="year"
+        )
+        msg = qe.build_user_message(spec)
+        assert "year" in msg.lower()
+
+    def test_version_is_v3(self) -> None:
+        """v3 added the time_window field; bump captured here."""
+        assert qe.VERSION == "v3"

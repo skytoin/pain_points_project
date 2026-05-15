@@ -18,6 +18,7 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
+from loguru import logger as _loguru
 
 from discovery.sources.reddit import (
     RedditSource,
@@ -434,3 +435,115 @@ class TestRedditSourceFetch:
         )
         assert len(records) == 1
         assert records[0].external_id == "/r/startups/comments/good/"
+
+
+class TestRedditSourceLogging:
+    """Skill item 21: per-query log line carrying URL, status, response
+    time, count before AND after the engagement filter. This is the
+    diagnostic foundation for debugging low-yield runs.
+    """
+
+    async def test_run_one_logs_structured_query_summary(self) -> None:
+        captured: list[dict[str, Any]] = []
+
+        def sink(message: Any) -> None:
+            captured.append(dict(message.record["extra"]))
+
+        sink_id = _loguru.add(sink, level="DEBUG")
+        try:
+
+            def handler(_: httpx.Request) -> httpx.Response:
+                # 3 children, 2 of which pass the engagement floor
+                return httpx.Response(
+                    200,
+                    json={
+                        "kind": "Listing",
+                        "data": {
+                            "children": [
+                                {
+                                    "kind": "t3",
+                                    "data": {
+                                        "id": "g1",
+                                        "permalink": "/r/x/comments/g1/",
+                                        "url": "https://x",
+                                        "score": 50,
+                                        "num_comments": 10,
+                                        "over_18": False,
+                                        "removed_by_category": None,
+                                        "author": "a",
+                                        "title": "kept 1",
+                                        "selftext": "",
+                                        "subreddit": "startups",
+                                    },
+                                },
+                                {
+                                    "kind": "t3",
+                                    "data": {
+                                        "id": "g2",
+                                        "permalink": "/r/x/comments/g2/",
+                                        "url": "https://x",
+                                        "score": 50,
+                                        "num_comments": 10,
+                                        "over_18": False,
+                                        "removed_by_category": None,
+                                        "author": "a",
+                                        "title": "kept 2",
+                                        "selftext": "",
+                                        "subreddit": "startups",
+                                    },
+                                },
+                                {
+                                    "kind": "t3",
+                                    "data": {
+                                        "id": "lo",
+                                        "permalink": "/r/x/comments/lo/",
+                                        "url": "https://x",
+                                        "score": 1,  # below threshold
+                                        "num_comments": 0,
+                                        "over_18": False,
+                                        "removed_by_category": None,
+                                        "author": "a",
+                                        "title": "dropped",
+                                        "selftext": "",
+                                        "subreddit": "startups",
+                                    },
+                                },
+                            ],
+                            "after": None,
+                        },
+                    },
+                )
+
+            source = RedditSource(
+                user_agent="discovery-tests/0.1",
+                client=_client_from_handler(handler),
+                sleep=_noop_sleep,
+            )
+            await source.fetch(
+                {
+                    "queries": [
+                        {
+                            "endpoint": "per_sub",
+                            "subreddit": "startups",
+                            "q": "wish there was",
+                            "sort": "top",
+                            "t": "year",
+                            "limit": 100,
+                        }
+                    ]
+                }
+            )
+
+            # Find the per-query log line — identified by the URL field
+            query_logs = [c for c in captured if "url" in c and "count_after_filter" in c]
+            assert query_logs, f"no per-query log line found; captured: {captured}"
+            log = query_logs[0]
+            assert log["status"] == 200
+            assert log["count_before_filter"] == 3
+            assert log["count_after_filter"] == 2
+            assert log["endpoint"] == "per_sub"
+            assert log["subreddit"] == "startups"
+            assert log["elapsed_ms"] >= 0
+            assert "/r/startups/search.json" in log["url"]
+        finally:
+            _loguru.remove(sink_id)

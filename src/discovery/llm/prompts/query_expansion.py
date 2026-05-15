@@ -16,6 +16,9 @@ Versioning:
     v2 — added required `subreddit` field on per_sub queries (Reddit
     adapter needs the target sub as a structured value, not only
     mentioned in the rationale text).
+    v3 — user-controlled `time_window` (skill item 11). JobSpec carries
+    a single `t` value (`month`, `year`, ...) that every query inherits;
+    the LLM is told to align query design with the chosen window.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from typing import Any
 
 from discovery.jobs import JobSpec
 
-VERSION: str = "v2"
+VERSION: str = "v3"
 
 
 SYSTEM_PROMPT: str = """\
@@ -130,8 +133,22 @@ signals on documentation tools" beats "looking for pain".
 
 - `sort=top` unless you have a specific reason (`new` for emerging
   trends; `hot` for current discussion).
-- `t=month` unless the spec's `as_of` date implies a narrower window.
+- `t` — **use whatever the user specified in the user message** (the
+  "Search time window" line). Every query's `t` should equal that
+  value. The user picks `year` for niche/B2B topics, `month` for
+  active consumer topics. Don't override their choice.
 - `limit=100` — it's the max Reddit allows; smaller wastes rate budget.
+
+# Aligning your query design with the time window
+
+The chosen `time_window` should influence your query design:
+
+- `year` or `all` — niche/quiet topics. Use broader synonyms, more
+  general phrasing. There's a year of posts to draw from, so even
+  weaker matches are worth fielding.
+- `month` — the default. Active topics with steady weekly chatter.
+- `week` or `day` — fresh-news mode. Tighter, more current language;
+  avoid evergreen phrasings that would match anything.
 
 # What NOT to do
 
@@ -335,7 +352,8 @@ def build_user_message(spec: JobSpec) -> str:
 
     Includes only the fields that are set (location and size are
     optional). The `as_of` date is rendered as ISO format so the LLM
-    can reason about a coarse `t` parameter choice.
+    can reason about its query design. `time_window` is the
+    user-chosen search depth — set every query's `t` field to match.
     """
     lines: list[str] = []
     lines.append(f"Industry: {spec.industry}")
@@ -344,6 +362,9 @@ def build_user_message(spec: JobSpec) -> str:
         lines.append(f"Location: {spec.location}")
     if spec.size is not None:
         lines.append(f"Company size: {spec.size}")
+    lines.append(
+        f"Search time window (Reddit `t`): {spec.time_window}"
+    )
     lines.append("")
     lines.append(
         "Produce a JobPlan with 10-15 reddit_queries and a shortlist "

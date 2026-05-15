@@ -38,12 +38,19 @@ async def _run_discovery(
     location: str | None,
     size: str | None,
     as_of: date,
+    time_window: str,
 ) -> None:
     engine = get_engine()
     maker = async_session_factory(engine)
     registry = build_default_registry()
 
-    spec = JobSpec(industry=industry, location=location, size=size, as_of=as_of)
+    spec = JobSpec(
+        industry=industry,
+        location=location,
+        size=size,
+        as_of=as_of,
+        time_window=time_window,  # type: ignore[arg-type]
+    )
 
     try:
         async with maker() as session:
@@ -109,7 +116,19 @@ def run_command(
         "--as-of",
         help="Date anchor in YYYY-MM-DD format. Defaults to today.",
     ),
+    time_window: str = typer.Option(
+        "month",
+        "--time-window",
+        "-t",
+        help=(
+            "Reddit search window: hour | day | week | month | year | all. "
+            "Default month. Use year for niche / B2B topics where a month "
+            "doesn't produce enough signal."
+        ),
+    ),
 ) -> None:
     """Run a discovery slice: create the job, enqueue Reddit tasks, drain the queue."""
     anchor = date.today() if as_of == "today" else date.fromisoformat(as_of)
-    asyncio.run(_run_discovery(industry, location, size, anchor))
+    asyncio.run(
+        _run_discovery(industry, location, size, anchor, time_window)
+    )

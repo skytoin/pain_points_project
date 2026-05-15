@@ -22,6 +22,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from discovery.db import models  # noqa: F401 — registers tables on metadata
 from discovery.db.engine import async_session_factory, create_engine_for
+from discovery.hashing import hash_params
 from discovery.jobs import JobSpec, create_job
 
 
@@ -76,6 +77,40 @@ class TestJobSpec:
         dumped = spec.model_dump(mode="json")
         assert dumped["as_of"] == "2026-06-01"
         assert isinstance(dumped["as_of"], str)
+
+
+class TestJobSpecTimeWindow:
+    """Reddit's `t` parameter values, exposed at the spec level so users
+    can widen the search window for niche topics (skill item 11).
+    """
+
+    def test_defaults_to_month(self) -> None:
+        spec = JobSpec(industry="x", as_of=date(2026, 6, 1))
+        assert spec.time_window == "month"
+
+    def test_accepts_all_reddit_values(self) -> None:
+        for value in ("hour", "day", "week", "month", "year", "all"):
+            spec = JobSpec(
+                industry="x", as_of=date(2026, 6, 1), time_window=value
+            )
+            assert spec.time_window == value
+
+    def test_rejects_invalid_value(self) -> None:
+        with pytest.raises(ValidationError):
+            JobSpec(
+                industry="x",
+                as_of=date(2026, 6, 1),
+                time_window="decade",  # type: ignore[arg-type]
+            )
+
+    def test_time_window_participates_in_hash(self) -> None:
+        """Two specs differing only by time_window must produce different
+        spec_hashes so monthly vs yearly runs don't collide in the cache."""
+        a = JobSpec(industry="x", as_of=date(2026, 6, 1), time_window="month")
+        b = JobSpec(industry="x", as_of=date(2026, 6, 1), time_window="year")
+        assert hash_params(a.model_dump(mode="json")) != hash_params(
+            b.model_dump(mode="json")
+        )
 
 
 # --- create_job -------------------------------------------------------------

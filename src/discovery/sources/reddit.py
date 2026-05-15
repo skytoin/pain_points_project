@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlencode
@@ -210,8 +211,10 @@ class RedditSource(BaseSource):
 
     async def _run_one(self, query: dict[str, Any]) -> list[RawRecord]:
         url = build_query_url(query)
+        started_at = time.monotonic()
         async with self._limiter:
             response = await self._fetch_with_retries(url)
+        elapsed_ms = round((time.monotonic() - started_at) * 1000, 1)
         response.raise_for_status()
         payload = response.json()
         children = payload.get("data", {}).get("children", [])
@@ -221,6 +224,21 @@ class RedditSource(BaseSource):
             post = child.get("data", {})
             if keep_post(post, min_score=self._min_score, min_comments=self._min_comments):
                 out.append(post_to_raw_record(post))
+
+        # Skill item 21 — per-query diagnostic line. Carries the URL,
+        # HTTP status, response time, and counts before AND after the
+        # engagement floor so low-yield runs can be debugged without
+        # re-running the discovery from scratch.
+        logger.info(
+            "reddit query done",
+            url=url,
+            status=response.status_code,
+            elapsed_ms=elapsed_ms,
+            count_before_filter=len(children),
+            count_after_filter=len(out),
+            endpoint=query.get("endpoint"),
+            subreddit=query.get("subreddit"),
+        )
         return out
 
     async def _fetch_with_retries(self, url: str) -> httpx.Response:
