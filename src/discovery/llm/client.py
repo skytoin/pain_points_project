@@ -111,9 +111,14 @@ async def call_openai[Resp: BaseModel](
 ) -> Resp:
     """Call OpenAI Chat Completions API via instructor.
 
-    `system` is folded into the messages array as a `developer`-role
-    entry — gpt-5.x renamed the system role; the new spelling is
-    `developer`. No `system=` top-level param exists on this API.
+    Two gpt-5.x quirks the wrapper handles for callers:
+
+      - `system` is folded into the messages array as a `developer`-role
+        entry. The Chat Completions API has no top-level `system=` param,
+        and gpt-5.x renamed the message role from `system` → `developer`.
+      - `max_tokens` is renamed `max_completion_tokens` at the API level.
+        Python callers still pass `max_tokens=...` for ergonomic
+        consistency with `call_anthropic`; we translate at the boundary.
 
     `model` has no default — pick one explicitly at the call site.
     """
@@ -125,7 +130,7 @@ async def call_openai[Resp: BaseModel](
         "Resp",
         await client.chat.completions.create(
             model=model,
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
             temperature=temperature,
             messages=[
                 {"role": "developer", "content": system},

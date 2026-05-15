@@ -88,6 +88,26 @@ class TestCallOpenAI:
         assert call["model"] == "gpt-5.4"
         assert call["temperature"] == 0.2
 
+    async def test_renames_max_tokens_to_max_completion_tokens(
+        self, fake_openai: _FakeOpenAIClient
+    ) -> None:
+        """gpt-5.x renamed `max_tokens` → `max_completion_tokens`; the
+        OpenAI API now rejects the old name. We keep `max_tokens` as the
+        Python param name for caller ergonomics and translate it at the
+        boundary.
+        """
+        await call_openai(
+            system="s",
+            user="u",
+            response_model=_Echo,
+            model="gpt-5.4",
+            max_tokens=2048,
+        )
+        call = fake_openai.chat.completions.last_call
+        assert call is not None
+        assert call["max_completion_tokens"] == 2048
+        assert "max_tokens" not in call
+
 
 class TestLazyClient:
     def test_raises_when_api_key_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
