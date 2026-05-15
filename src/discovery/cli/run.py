@@ -22,10 +22,12 @@ from datetime import date
 import typer
 from rich.console import Console
 
+from discovery.cli.inspect import render_job_detail
 from discovery.db.engine import async_session_factory, get_engine
 from discovery.jobs import JobSpec, create_job
 from discovery.orchestrator.jobs import plan_job
 from discovery.orchestrator.reddit import enqueue_reddit_task_for_job
+from discovery.view import gather_job_detail
 from discovery.workers import build_default_registry, run_worker_once
 
 console = Console()
@@ -76,6 +78,14 @@ async def _run_discovery(
                 console.print(f"  [green]✓[/green] processed task {task_id}")
 
             console.print(f"[bold green]done.[/bold green] {processed} task(s) processed.")
+
+            # Print the full report — plan + top posts — so the user
+            # doesn't need a second command to see what came back.
+            if job.id is not None:
+                detail = await gather_job_detail(session, job_id=job.id, post_limit=5)
+                if detail is not None:
+                    console.print()
+                    render_job_detail(detail)
     finally:
         await engine.dispose()
 
