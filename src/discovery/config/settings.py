@@ -20,7 +20,26 @@ from pathlib import Path
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+def _find_project_root(here: Path) -> Path:
+    """Return the project root for a settings.py at `here`.
+
+    Standard checkout: `<root>/src/discovery/config/settings.py` → `<root>`
+    (parents[3]).
+
+    Worktree checkout: `<root>/.claude/worktrees/<name>/src/discovery/config/settings.py`
+    → `<root>`. This means every worktree shares the main project's `.env`
+    file, instead of each worktree needing its own copy of secrets.
+    """
+    standard = here.parents[3]
+    parts = standard.parts
+    for i in range(len(parts) - 1):
+        if parts[i] == ".claude" and parts[i + 1] == "worktrees":
+            return Path(*parts[:i])
+    return standard
+
+
+PROJECT_ROOT = _find_project_root(Path(__file__).resolve())
 
 
 class Settings(BaseSettings):
@@ -65,6 +84,10 @@ class Settings(BaseSettings):
     database_url: str = Field(
         default="sqlite+aiosqlite:///data/discovery.db",
         description="SQLAlchemy URL. Defaults to a local SQLite file.",
+        # Bound to DISCOVERY_DATABASE_URL only, not bare DATABASE_URL.
+        # The main project sharing this `.env` defines DATABASE_URL for
+        # its own (different) database; we don't want that bleeding in.
+        validation_alias="DISCOVERY_DATABASE_URL",
     )
     llm_cache_dir: Path = Field(default=PROJECT_ROOT / ".diskcache" / "llm")
     log_level: str = "INFO"
