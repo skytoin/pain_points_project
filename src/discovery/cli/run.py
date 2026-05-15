@@ -24,6 +24,7 @@ from rich.console import Console
 
 from discovery.db.engine import async_session_factory, get_engine
 from discovery.jobs import JobSpec, create_job
+from discovery.orchestrator.jobs import plan_job
 from discovery.orchestrator.reddit import enqueue_reddit_task_for_job
 from discovery.workers import build_default_registry, run_worker_once
 
@@ -49,6 +50,15 @@ async def _run_discovery(
                 f"[bold]job:[/bold] {job.id}  "
                 f"[dim](spec_hash {job.spec_hash[:12]}…, status {job.status.value})[/dim]"
             )
+
+            # Wave 0: LLM query expansion via OpenAI gpt-5.4. On success
+            # this populates job.job_plan; on failure (no API key, LLM
+            # error, validation drops too many queries) the job_plan
+            # stays null and the Reddit orchestrator falls back to its
+            # deterministic template.
+            job = await plan_job(session, job)
+            plan_status = "planned" if job.job_plan is not None else "fallback"
+            console.print(f"[bold]wave 0:[/bold] {plan_status}")
 
             task = await enqueue_reddit_task_for_job(session, job)
             console.print(
