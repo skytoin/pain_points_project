@@ -23,6 +23,13 @@ Versioning:
     from memory; it selects exclusively from a supplied table of REAL
     subreddits (spec §6 prompt #2). build_user_message now takes that
     table. All v3 content-query rules are retained unchanged.
+    v5 — wider band (25-30, was 10-15) and a second kind of query: the
+    LLM keeps the generic pain-grid AND additionally brainstorms
+    industry-specific queries for the specific industry in the request.
+    Adds a fenced one-industry illustration (wedding photography) with
+    an explicit "re-derive, never copy" guard. build_user_message's
+    user-turn count string also moves to 25-30. All v4 grounding and
+    Reddit-syntax rules retained.
 """
 
 from __future__ import annotations
@@ -35,12 +42,12 @@ from discovery.sources.reddit_subreddits import (
     render_candidate_table,
 )
 
-VERSION: str = "v4"
+VERSION: str = "v5"
 
 
 SYSTEM_PROMPT: str = """\
 You are a Reddit search query designer. Your job is to brainstorm
-between 10 and 15 high-signal Reddit search queries for a given
+between 25 and 30 high-signal Reddit search queries for a given
 industry, plus a short list of domain-specific subreddits worth
 scanning.
 
@@ -109,8 +116,54 @@ not synonyms. `"I would buy"` is NOT a variant of `"I would pay"`
 
 Subreddits give you the DOMAIN; phrases give you the SIGNAL. A nurse
 looking for product ideas searches the same phrases a DevOps founder
-uses — just in different subs. Don't try to make domain-specific
-phrase lists; you'll lose generality.
+uses — just in different subs. For the STANDARD pain-grid queries
+(kind 1, defined in "Two kinds of queries" below) keep phrasing
+industry-agnostic — domain-specific phrasing there loses generality.
+Industry-specific phrasing is the explicit, separate job of the kind-2
+queries described in that section.
+
+# Two kinds of queries — produce BOTH (25-30 total)
+
+Your 25-30 queries MUST draw from BOTH of these, each well represented:
+
+1. STANDARD pain-grid queries — the generic pain categories above
+   (willingness-to-pay, unmet need, frustration, alternatives, market
+   gap, builder, switching, dead-competitor) crossed with the supplied
+   subreddits. Keep these industry-AGNOSTIC in phrasing; do not bolt
+   industry jargon onto them.
+
+2. INDUSTRY-SPECIFIC queries — reason about THIS specific industry (the
+   one in the user message). Think about its real tools, software,
+   workflows, roles, recurring operational headaches, money and billing
+   pain, client or vendor friction, and the words practitioners in that
+   trade actually use. Then build queries that hunt those concrete
+   problems by name, still combined with a pain category and the
+   supplied subreddits.
+
+Let the INDUSTRY-SPECIFIC set carry most of the total -- it is how you
+reach 25-30 -- while still including a substantial share of STANDARD
+pain-grid queries. Neither kind alone is acceptable.
+
+## Illustration -- ONE example industry only (do NOT reuse these)
+
+The list below is illustrative ONLY, for the example industry "wedding
+photography". It shows the KIND of domain reasoning expected; it is NOT
+a template to copy. For the ACTUAL industry in the user message you
+must re-derive your own, different, unique industry-specific angles the
+same way. Do not reuse, lightly edit, or anchor on these
+wedding-photography terms unless the user's industry genuinely is
+wedding photography.
+
+Example industry-specific angles for "wedding photography":
+- editing and culling backlog, turnaround-time complaints
+- client gallery, proofing, and delivery-platform pain
+- booking, contracts, deposits, payment-collection friction
+- second-shooter and associate-coordination problems
+- album design and print-vendor frustration
+- pricing, packaging, and client-ghosting pain
+
+For any other industry these would be entirely different terms drawn
+from THAT industry's real workflow. Re-derive; never copy.
 
 For each query, you choose:
 
@@ -124,7 +177,7 @@ For each query, you choose:
 
 You will emit a JSON object validated as `JobPlan` with two fields:
 
-- `reddit_queries` — between 10 and 15 `RedditQuerySpec` objects.
+- `reddit_queries` — between 25 and 30 `RedditQuerySpec` objects.
   Each has `endpoint`, `q`, `subreddit` (set for per_sub only),
   `sort`, `t`, `limit`, and a one-sentence `rationale` explaining
   why this query is worth running.
@@ -168,11 +221,12 @@ Hard rule: these are the ONLY subreddits available for this job. Select
 exclusively from this table. Never use a subreddit that is not listed.
 Never invent names. Do NOT fall back to your own knowledge or memory.
 If the table is thin, use FEWER distinct subreddits — but you must
-STILL produce 10-15 content queries by varying the pain-phrase angle
-across the available subs (per_sub and site_wide combinations). Do NOT
-emit fewer than 10 queries. Query count is driven by subreddit x
-pain-category combinations, not 1:1 with subreddit count -- even 3 subs
-comfortably yield 10-15 queries.
+STILL produce 25-30 content queries by varying the pain-phrase angle
+AND the industry-specific angle across the available subs (per_sub and
+site_wide combinations). Do NOT emit fewer than 25 queries. Query count
+is driven by subreddit x (pain-category + industry-specific) angle
+combinations, not 1:1 with subreddit count -- even 3 subs comfortably
+yield well over 25 queries.
 
 How to read the table (and its traps):
 
@@ -199,7 +253,7 @@ There is no minimum. The hard ceiling is 30 — if you return more than
 - Don't put more than ~6 subreddits in a single site_wide query.
 - Don't write pain phrases without quotes — Reddit will treat the
   words separately.
-- Don't return fewer than 10 or more than 15 queries.
+- Don't return fewer than 25 or more than 30 queries.
 - Don't invent subreddits that obviously won't exist (e.g.
   `r/commercialcleaning2026`); stick to names that real communities
   actually use.
@@ -414,8 +468,10 @@ def build_user_message(spec: JobSpec, table: list[SubredditCandidate]) -> str:
     lines.append(render_candidate_table(table))
     lines.append("")
     lines.append(
-        "Produce a JobPlan with 10-15 reddit_queries using ONLY the "
-        "subreddits above. Follow the system-prompt rules; explain each "
-        "query's rationale."
+        "Produce a JobPlan with 25-30 reddit_queries using ONLY the "
+        "subreddits above — a substantial share STANDARD pain-grid and a "
+        "substantial share INDUSTRY-SPECIFIC (re-derived for THIS "
+        "industry, not the prompt's wedding-photography illustration). "
+        "Follow the system-prompt rules; explain each query's rationale."
     )
     return "\n".join(lines)

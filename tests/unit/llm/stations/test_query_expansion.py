@@ -39,7 +39,7 @@ def _query(label: str = "x", sub: str = "startups") -> RedditQuerySpec:
     )
 
 
-def _plan(subs: list[str] | None = None, n: int = 10) -> JobPlan:
+def _plan(subs: list[str] | None = None, n: int = 25) -> JobPlan:
     return JobPlan(
         reddit_queries=[_query(f"q{i}") for i in range(n)],
         reddit_subreddits=subs if subs is not None else ["startups"],
@@ -116,7 +116,7 @@ class TestCacheHit:
 
         result = await run_query_expansion(spec)
         assert isinstance(result, JobPlan)
-        assert len(result.reddit_queries) == 10
+        assert len(result.reddit_queries) == 25
 
 
 class TestCacheMiss:
@@ -145,7 +145,7 @@ class TestValidationDropsInvalidQueries:
     async def test_drops_lowercase_or_query_via_existing_tail(
         self, tmp_cache: Cache, spec: JobSpec, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        good = [_query(f"g{i}") for i in range(10)]
+        good = [_query(f"g{i}") for i in range(25)]
         bad = RedditQuerySpec(
             endpoint="site_wide", q='(subreddit:a or subreddit:b) AND "x"', rationale="b"
         )
@@ -156,7 +156,7 @@ class TestValidationDropsInvalidQueries:
         )
         monkeypatch.setattr(station, "search_subreddits", _make_search("startups"))
         result = await run_query_expansion(spec)
-        assert len(result.reddit_queries) == 10
+        assert len(result.reddit_queries) == 25
 
 
 class TestFallbackTable:
@@ -222,7 +222,7 @@ class TestFallbackTable:
         monkeypatch.setattr(
             station,
             "call_openai",
-            _make_call_openai(JobPlan(reddit_queries=[*good, *[bad] * 6])),
+            _make_call_openai(JobPlan(reddit_queries=[*good, *[bad] * 17])),
         )
         monkeypatch.setattr(station, "search_subreddits", _make_search("startups"))
         with pytest.raises(QueryExpansionError):
@@ -253,7 +253,7 @@ class TestTimeWindowOverride:
                 rationale=f"r{i}",
                 t=("month" if i % 2 else "week"),  # type: ignore[arg-type]
             )
-            for i in range(10)
+            for i in range(25)
         ]
         monkeypatch.setattr(
             station, "call_openai", _make_call_openai(JobPlan(reddit_queries=mixed))

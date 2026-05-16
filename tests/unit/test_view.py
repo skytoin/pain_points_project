@@ -29,7 +29,7 @@ async def session() -> AsyncIterator[AsyncSession]:
     await engine.dispose()
 
 
-def _plan(n: int = 10) -> JobPlan:
+def _plan(n: int = 25) -> JobPlan:
     return JobPlan(
         reddit_queries=[
             RedditQuerySpec(
@@ -110,7 +110,7 @@ class TestGatherJobDetail:
 
     async def test_returns_plan_and_posts(self, session: AsyncSession) -> None:
         job = await create_job(session, JobSpec(industry="food truck", as_of=date(2026, 6, 1)))
-        job.job_plan = _plan(n=11).model_dump()
+        job.job_plan = _plan(n=25).model_dump()
         session.add(job)
         await session.commit()
         assert job.id is not None
@@ -122,7 +122,7 @@ class TestGatherJobDetail:
         assert detail.summary.id == job.id
         assert detail.summary.post_count == 3
         assert detail.plan is not None
-        assert len(detail.plan.reddit_queries) == 11
+        assert len(detail.plan.reddit_queries) == 25
         # posts come back as PostView, capped at the limit
         assert len(detail.posts) == 3
         assert detail.posts[0].title.startswith("title")

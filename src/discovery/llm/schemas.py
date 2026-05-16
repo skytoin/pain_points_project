@@ -89,7 +89,7 @@ class JobPlan(BaseModel):
 
     model_config = ConfigDict(extra="allow", frozen=True)
 
-    reddit_queries: list[RedditQuerySpec] = Field(min_length=10, max_length=15)
+    reddit_queries: list[RedditQuerySpec] = Field(min_length=25, max_length=30)
     reddit_subreddits: list[str] = Field(default_factory=list)
 
 

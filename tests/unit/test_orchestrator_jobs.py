@@ -46,7 +46,7 @@ def _valid_plan() -> JobPlan:
                 q=f'(subreddit:startups OR subreddit:smallbusiness) AND "p{i}"',
                 rationale="x",
             )
-            for i in range(10)
+            for i in range(25)
         ]
     )
 
@@ -65,7 +65,7 @@ class TestPlanJob:
         updated = await plan_job(session, job)
         assert updated.job_plan is not None
         assert "reddit_queries" in updated.job_plan
-        assert len(updated.job_plan["reddit_queries"]) == 10
+        assert len(updated.job_plan["reddit_queries"]) == 25
 
     async def test_leaves_job_plan_null_on_failure(
         self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch

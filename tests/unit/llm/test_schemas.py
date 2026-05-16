@@ -53,24 +53,29 @@ class TestRedditQuerySpec:
 
 
 class TestJobPlan:
-    def test_requires_min_10_queries(self) -> None:
+    def test_rejects_fewer_than_25_queries(self) -> None:
         with pytest.raises(ValidationError):
-            JobPlan(reddit_queries=[_good_query() for _ in range(9)])
+            JobPlan(reddit_queries=[_good_query() for _ in range(24)])
 
-    def test_accepts_10_queries(self) -> None:
-        plan = JobPlan(reddit_queries=[_good_query() for _ in range(10)])
-        assert len(plan.reddit_queries) == 10
+    def test_accepts_25_queries(self) -> None:
+        plan = JobPlan(reddit_queries=[_good_query() for _ in range(25)])
+        assert len(plan.reddit_queries) == 25
 
-    def test_rejects_more_than_15_queries(self) -> None:
+    def test_accepts_30_queries(self) -> None:
+        plan = JobPlan(reddit_queries=[_good_query() for _ in range(30)])
+        assert len(plan.reddit_queries) == 30
+
+    def test_rejects_more_than_30_queries(self) -> None:
         with pytest.raises(ValidationError):
-            JobPlan(reddit_queries=[_good_query() for _ in range(16)])
+            JobPlan(reddit_queries=[_good_query() for _ in range(31)])
 
     def test_extra_fields_round_trip(self) -> None:
         """extra='allow' — future prompts can emit extra fields and they
-        stay on the model (and on Job.job_plan JSON) without losing them."""
+        stay on the model (and on Job.job_plan JSON) without losing them.
+        model_validate re-validates, so the list must satisfy the 25 floor."""
         plan = JobPlan.model_validate(
             {
-                "reddit_queries": [_good_query().model_dump() for _ in range(10)],
+                "reddit_queries": [_good_query().model_dump() for _ in range(25)],
                 "youtube_queries": ["a", "b"],  # not a typed field yet
             }
         )
@@ -79,7 +84,7 @@ class TestJobPlan:
         assert dumped["youtube_queries"] == ["a", "b"]
 
     def test_reddit_subreddits_defaults_to_empty(self) -> None:
-        plan = JobPlan(reddit_queries=[_good_query() for _ in range(10)])
+        plan = JobPlan(reddit_queries=[_good_query() for _ in range(25)])
         assert plan.reddit_subreddits == []
 
 

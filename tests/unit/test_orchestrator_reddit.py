@@ -129,14 +129,14 @@ class TestReadsFromJobPlan:
                 q=f'(subreddit:startups) AND "llm{i}"',
                 rationale="x",
             )
-            for i in range(10)
+            for i in range(25)
         ]
         job.job_plan = JobPlan(reddit_queries=llm_queries).model_dump()
         session.add(job)
         await session.commit()
 
         task = await enqueue_reddit_task_for_job(session, job)
-        assert len(task.params["queries"]) == 10
+        assert len(task.params["queries"]) == 25
         for q in task.params["queries"]:
             assert '"llm' in q["q"]
 
