@@ -19,6 +19,10 @@ Versioning:
     v3 — user-controlled `time_window` (skill item 11). JobSpec carries
     a single `t` value (`month`, `year`, ...) that every query inherits;
     the LLM is told to align query design with the chosen window.
+    v4 — grounded selection. The LLM no longer recalls subreddit names
+    from memory; it selects exclusively from a supplied table of REAL
+    subreddits (spec §6 prompt #2). build_user_message now takes that
+    table. All v3 content-query rules are retained unchanged.
 """
 
 from __future__ import annotations
@@ -26,8 +30,12 @@ from __future__ import annotations
 from typing import Any
 
 from discovery.jobs import JobSpec
+from discovery.sources.reddit_subreddits import (
+    SubredditCandidate,
+    render_candidate_table,
+)
 
-VERSION: str = "v3"
+VERSION: str = "v4"
 
 
 SYSTEM_PROMPT: str = """\
@@ -149,6 +157,40 @@ The chosen `time_window` should influence your query design:
 - `month` — the default. Active topics with steady weekly chatter.
 - `week` or `day` — fresh-news mode. Tighter, more current language;
   avoid evergreen phrasings that would match anything.
+
+# GROUNDING — you may ONLY use the supplied subreddit table
+
+A table of REAL, currently-existing subreddits for THIS job is included
+in the user message (columns: name, subscribers, active_user_count,
+activity_ratio, public_description, matched_phrases).
+
+Hard rule: these are the ONLY subreddits available for this job. Select
+exclusively from this table. Never use a subreddit that is not listed.
+Never invent names. Do NOT fall back to your own knowledge or memory.
+If the table is thin, use FEWER distinct subreddits — but you must
+STILL produce 10-15 content queries by varying the pain-phrase angle
+across the available subs (per_sub and site_wide combinations). Do NOT
+emit fewer than 10 queries. Query count is driven by subreddit x
+pain-category combinations, not 1:1 with subreddit count -- even 3 subs
+comfortably yield 10-15 queries.
+
+How to read the table (and its traps):
+
+- `public_description` is the PRIMARY relevance signal. Does the sub's
+  stated purpose match the industry, or does it merely contain the
+  word? A generic giant that happens to mention the term is noise.
+- `matched_phrases` high ⇒ robustly on-topic. `matched_phrases = 1` ⇒
+  likely a fluke single-phrase description match; treat with suspicion.
+- `activity_ratio` is misleading on tiny subs — always cross-check the
+  raw `active_user_count` (12 active people is thin regardless of
+  ratio).
+- Large `subscribers` is NOT better. Prefer a focused practitioner
+  community over a generic mega-sub.
+
+Selection instruction: keep every subreddit that is clearly on-topic
+AND alive. ORDER your selection best→worst by your own confidence.
+There is no minimum. The hard ceiling is 30 — if you return more than
+30, only your first 30 (in your order) are kept.
 
 # What NOT to do
 
@@ -347,16 +389,18 @@ FEW_SHOT_EXAMPLES: list[dict[str, Any]] = [
 ]
 
 
-def build_user_message(spec: JobSpec) -> str:
-    """Render the JobSpec into a user message the LLM sees.
+def build_user_message(spec: JobSpec, table: list[SubredditCandidate]) -> str:
+    """Render the JobSpec plus the grounded subreddit table into the
+    Call #2 user message.
 
-    Includes only the fields that are set (location and size are
-    optional). The `as_of` date is rendered as ISO format so the LLM
-    can reason about its query design. `time_window` is the
-    user-chosen search depth — set every query's `t` field to match.
+    `table` is the deterministic pipeline's surviving candidates. It is
+    rendered compactly via `render_candidate_table` (the 6 LLM-facing
+    columns — spec §5); the LLM may pick subreddits ONLY from it.
+    Optional spec fields are included only when set. `time_window` is
+    the user-chosen search depth — every query's `t` is later forced to
+    match it deterministically (skill item 11).
     """
-    lines: list[str] = []
-    lines.append(f"Industry: {spec.industry}")
+    lines: list[str] = [f"Industry: {spec.industry}"]
     lines.append(f"As of: {spec.as_of.isoformat()}")
     if spec.location is not None:
         lines.append(f"Location: {spec.location}")
@@ -365,8 +409,13 @@ def build_user_message(spec: JobSpec) -> str:
     lines.append(f"Search time window (Reddit `t`): {spec.time_window}")
     lines.append("")
     lines.append(
-        "Produce a JobPlan with 10-15 reddit_queries and a shortlist "
-        "of reddit_subreddits for this industry. Follow the system-"
-        "prompt rules; explain each query's rationale."
+        "Subreddit table (select EXCLUSIVELY from these — never invent names, never use memory):"
+    )
+    lines.append(render_candidate_table(table))
+    lines.append("")
+    lines.append(
+        "Produce a JobPlan with 10-15 reddit_queries using ONLY the "
+        "subreddits above. Follow the system-prompt rules; explain each "
+        "query's rationale."
     )
     return "\n".join(lines)

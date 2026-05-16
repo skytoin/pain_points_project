@@ -1,8 +1,10 @@
-"""Tests for `discovery.llm.stations.query_expansion.run_query_expansion`.
+"""Tests for `run_query_expansion` — the integrated Wave 0 flow.
 
-We never call the real OpenAI here. Either:
-  - the diskcache is pre-populated with a known JobPlan (cache-hit path)
-  - the `call_openai` function is monkeypatched to return a stub
+Never calls real OpenAI or real Reddit. We monkeypatch BOTH:
+  - `station.call_openai` — a dispatcher returning SubredditSearchPhrases
+    for Call #1 and a JobPlan for Call #2 (keyed on `response_model`).
+  - `station.search_subreddits` — a fake returning canned PhraseResults.
+Plus the diskcache is pointed at a temp dir per test.
 """
 
 from __future__ import annotations
@@ -18,30 +20,66 @@ from diskcache import Cache
 from discovery.jobs import JobSpec
 from discovery.llm.cache import cache_key, make_cache, put_cached
 from discovery.llm.prompts import query_expansion as qe
-from discovery.llm.schemas import JobPlan, RedditQuerySpec
+from discovery.llm.prompts import subreddit_phrases as sp
+from discovery.llm.schemas import JobPlan, RedditQuerySpec, SubredditSearchPhrases
 from discovery.llm.stations import query_expansion as station
 from discovery.llm.stations.query_expansion import (
     MODEL,
     QueryExpansionError,
     run_query_expansion,
 )
+from discovery.sources.reddit_subreddits import PhraseResult, SubredditCandidate
 
 
-def _valid_query(label: str = "x") -> RedditQuerySpec:
+def _query(label: str = "x", sub: str = "startups") -> RedditQuerySpec:
     return RedditQuerySpec(
         endpoint="site_wide",
-        q=f'(subreddit:startups OR subreddit:smallbusiness) AND "{label}"',
+        q=f'(subreddit:{sub}) AND "{label}"',
         rationale=label,
     )
 
 
-def _valid_plan() -> JobPlan:
-    return JobPlan(reddit_queries=[_valid_query(f"q{i}") for i in range(10)])
+def _plan(subs: list[str] | None = None, n: int = 10) -> JobPlan:
+    return JobPlan(
+        reddit_queries=[_query(f"q{i}") for i in range(n)],
+        reddit_subreddits=subs if subs is not None else ["startups"],
+    )
+
+
+def _candidates(*names: str) -> list[SubredditCandidate]:
+    return [
+        SubredditCandidate(
+            name=n,
+            subscribers=5000,
+            active_user_count=120,
+            subreddit_type="public",
+            public_description=f"{n} practitioners",
+        )
+        for n in (names or ("startups",))
+    ]
+
+
+def _make_call_openai(
+    plan: JobPlan,
+    phrases: SubredditSearchPhrases | None = None,
+) -> Any:
+    async def _call(**kwargs: Any) -> Any:
+        if kwargs["response_model"] is SubredditSearchPhrases:
+            return phrases or SubredditSearchPhrases(phrases=["a", "b", "c"])
+        return plan
+
+    return _call
+
+
+def _make_search(*names: str) -> Any:
+    async def _search(phrases: list[str], **kwargs: Any) -> list[PhraseResult]:
+        return [PhraseResult(phrase=p, candidates=_candidates(*names)) for p in phrases]
+
+    return _search
 
 
 @pytest.fixture
 def tmp_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Cache]:
-    """Point the station's cache at a temp dir for each test."""
     cache = make_cache(tmp_path / "cache")
     monkeypatch.setattr(station, "_cache", cache)
     yield cache
@@ -53,25 +91,28 @@ def spec() -> JobSpec:
     return JobSpec(industry="commercial cleaning", as_of=date(2026, 6, 1))
 
 
+def _combined_key(spec: JobSpec) -> str:
+    return cache_key(
+        spec=spec.model_dump(mode="json"),
+        prompt_version=f"{sp.VERSION}+{qe.VERSION}",
+        model=MODEL,
+    )
+
+
 class TestCacheHit:
-    async def test_returns_cached_without_calling_llm(
-        self,
-        tmp_cache: Cache,
-        spec: JobSpec,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_cache_hit_skips_both_calls_and_the_client(
+        self, tmp_cache: Cache, spec: JobSpec, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        plan = _valid_plan()
-        key = cache_key(
-            spec=spec.model_dump(mode="json"),
-            prompt_version=qe.VERSION,
-            model=MODEL,
-        )
-        put_cached(tmp_cache, key, plan)
+        put_cached(tmp_cache, _combined_key(spec), _plan())
 
-        async def _explode(**kwargs: Any) -> None:
-            raise AssertionError("LLM should not be called on cache hit")
+        async def _explode_llm(**kwargs: Any) -> None:
+            raise AssertionError("no LLM call on cache hit")
 
-        monkeypatch.setattr(station, "call_openai", _explode)
+        async def _explode_search(*a: Any, **k: Any) -> None:
+            raise AssertionError("no sub-search on cache hit")
+
+        monkeypatch.setattr(station, "call_openai", _explode_llm)
+        monkeypatch.setattr(station, "search_subreddits", _explode_search)
 
         result = await run_query_expansion(spec)
         assert isinstance(result, JobPlan)
@@ -79,106 +120,132 @@ class TestCacheHit:
 
 
 class TestCacheMiss:
-    async def test_calls_llm_and_caches_result(
-        self,
-        tmp_cache: Cache,
-        spec: JobSpec,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_runs_full_chain_then_caches(
+        self, tmp_cache: Cache, spec: JobSpec, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        captured: dict[str, Any] = {}
-
-        async def _stub_llm(**kwargs: Any) -> JobPlan:
-            captured.update(kwargs)
-            return _valid_plan()
-
-        monkeypatch.setattr(station, "call_openai", _stub_llm)
+        monkeypatch.setattr(station, "call_openai", _make_call_openai(_plan()))
+        monkeypatch.setattr(station, "search_subreddits", _make_search("startups"))
 
         result = await run_query_expansion(spec)
         assert isinstance(result, JobPlan)
-        assert captured["model"] == MODEL
 
         async def _explode(**kwargs: Any) -> None:
             raise AssertionError("expected cache hit on second call")
 
+        async def _explode_search(*a: Any, **k: Any) -> None:
+            raise AssertionError("no sub-search on cache hit")
+
         monkeypatch.setattr(station, "call_openai", _explode)
+        monkeypatch.setattr(station, "search_subreddits", _explode_search)
         again = await run_query_expansion(spec)
         assert len(again.reddit_queries) == len(result.reddit_queries)
 
 
 class TestValidationDropsInvalidQueries:
-    async def test_drops_lowercase_or_query(
-        self,
-        tmp_cache: Cache,
-        spec: JobSpec,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_drops_lowercase_or_query_via_existing_tail(
+        self, tmp_cache: Cache, spec: JobSpec, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        good = [_valid_query(f"g{i}") for i in range(10)]
+        good = [_query(f"g{i}") for i in range(10)]
         bad = RedditQuerySpec(
-            endpoint="site_wide",
-            q='(subreddit:a or subreddit:b) AND "x"',  # lowercase or
-            rationale="bad",
+            endpoint="site_wide", q='(subreddit:a or subreddit:b) AND "x"', rationale="b"
         )
-        plan = JobPlan(reddit_queries=[*good, bad])
-
-        async def _stub_llm(**kwargs: Any) -> JobPlan:
-            return plan
-
-        monkeypatch.setattr(station, "call_openai", _stub_llm)
+        monkeypatch.setattr(
+            station,
+            "call_openai",
+            _make_call_openai(JobPlan(reddit_queries=[*good, bad])),
+        )
+        monkeypatch.setattr(station, "search_subreddits", _make_search("startups"))
         result = await run_query_expansion(spec)
-        assert len(result.reddit_queries) == 10  # bad one dropped
+        assert len(result.reddit_queries) == 10
 
 
-class TestFallbackOnTooFewValidQueries:
-    async def test_raises_when_below_min_after_validation(
-        self,
-        tmp_cache: Cache,
-        spec: JobSpec,
-        monkeypatch: pytest.MonkeyPatch,
+class TestFallbackTable:
+    """Every row of spec §10's failure table → QueryExpansionError."""
+
+    async def test_call1_failure(
+        self, tmp_cache: Cache, spec: JobSpec, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # 9 valid + 6 invalid = 15 (max). Validator drops 6 -> 9 survive,
-        # which is below the floor of 10 -> raise QueryExpansionError.
-        good = [_valid_query(f"g{i}") for i in range(9)]
-        bad = RedditQuerySpec(
-            endpoint="site_wide",
-            q='(subreddit:a or subreddit:b) AND "x"',
-            rationale="bad",
+        async def _call(**kwargs: Any) -> Any:
+            raise RuntimeError("call #1 down")
+
+        monkeypatch.setattr(station, "call_openai", _call)
+        monkeypatch.setattr(station, "search_subreddits", _make_search("startups"))
+        with pytest.raises(QueryExpansionError):
+            await run_query_expansion(spec)
+
+    async def test_all_phrase_searches_fail(
+        self, tmp_cache: Cache, spec: JobSpec, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _search(phrases: list[str], **kwargs: Any) -> list[PhraseResult]:
+            raise RuntimeError("reddit down")
+
+        monkeypatch.setattr(station, "call_openai", _make_call_openai(_plan()))
+        monkeypatch.setattr(station, "search_subreddits", _search)
+        with pytest.raises(QueryExpansionError):
+            await run_query_expansion(spec)
+
+    async def test_zero_subs_survive_filtering(
+        self, tmp_cache: Cache, spec: JobSpec, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _search(phrases: list[str], **kwargs: Any) -> list[PhraseResult]:
+            return [
+                PhraseResult(
+                    phrase=p,
+                    candidates=[SubredditCandidate(name="ghost", subreddit_type="private")],
+                )
+                for p in phrases
+            ]
+
+        monkeypatch.setattr(station, "call_openai", _make_call_openai(_plan()))
+        monkeypatch.setattr(station, "search_subreddits", _search)
+        with pytest.raises(QueryExpansionError):
+            await run_query_expansion(spec)
+
+    async def test_call2_failure(
+        self, tmp_cache: Cache, spec: JobSpec, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _call(**kwargs: Any) -> Any:
+            if kwargs["response_model"] is SubredditSearchPhrases:
+                return SubredditSearchPhrases(phrases=["a", "b", "c"])
+            raise RuntimeError("call #2 down")
+
+        monkeypatch.setattr(station, "call_openai", _call)
+        monkeypatch.setattr(station, "search_subreddits", _make_search("startups"))
+        with pytest.raises(QueryExpansionError):
+            await run_query_expansion(spec)
+
+    async def test_too_few_valid_queries_after_tail(
+        self, tmp_cache: Cache, spec: JobSpec, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        good = [_query(f"g{i}") for i in range(9)]
+        bad = RedditQuerySpec(endpoint="site_wide", q="(subreddit:a or subreddit:b)", rationale="b")
+        monkeypatch.setattr(
+            station,
+            "call_openai",
+            _make_call_openai(JobPlan(reddit_queries=[*good, *[bad] * 6])),
         )
-        plan = JobPlan(reddit_queries=[*good, *[bad] * 6])
-
-        async def _stub_llm(**kwargs: Any) -> JobPlan:
-            return plan
-
-        monkeypatch.setattr(station, "call_openai", _stub_llm)
+        monkeypatch.setattr(station, "search_subreddits", _make_search("startups"))
         with pytest.raises(QueryExpansionError):
             await run_query_expansion(spec)
 
-    async def test_raises_when_llm_itself_fails(
-        self,
-        tmp_cache: Cache,
-        spec: JobSpec,
-        monkeypatch: pytest.MonkeyPatch,
+
+class TestOffTableRejection:
+    async def test_off_table_subs_are_stripped_from_selection(
+        self, tmp_cache: Cache, spec: JobSpec, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        async def _stub_llm(**kwargs: Any) -> JobPlan:
-            raise RuntimeError("simulated upstream failure")
-
-        monkeypatch.setattr(station, "call_openai", _stub_llm)
-        with pytest.raises(QueryExpansionError):
-            await run_query_expansion(spec)
+        plan = _plan(subs=["startups", "ghost"])
+        monkeypatch.setattr(station, "call_openai", _make_call_openai(plan))
+        monkeypatch.setattr(station, "search_subreddits", _make_search("startups"))
+        result = await run_query_expansion(spec)
+        assert "ghost" not in result.reddit_subreddits
+        assert "startups" in result.reddit_subreddits
 
 
 class TestTimeWindowOverride:
-    """Skill item 11: every query's `t` field is forced to match the
-    spec's chosen `time_window`. Belt-and-suspenders — the LLM is told
-    in the prompt, but we override too in case it slips.
-    """
-
-    async def test_forces_year_on_every_query(
-        self,
-        tmp_cache: Cache,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_forces_window_on_every_query(
+        self, tmp_cache: Cache, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         year_spec = JobSpec(industry="x", as_of=date(2026, 6, 1), time_window="year")
-        # LLM returns queries with mixed `t` values — we should clobber them.
         mixed = [
             RedditQuerySpec(
                 endpoint="site_wide",
@@ -188,68 +255,45 @@ class TestTimeWindowOverride:
             )
             for i in range(10)
         ]
-
-        async def _stub_llm(**kwargs: Any) -> JobPlan:
-            return JobPlan(reddit_queries=mixed)
-
-        monkeypatch.setattr(station, "call_openai", _stub_llm)
+        monkeypatch.setattr(
+            station, "call_openai", _make_call_openai(JobPlan(reddit_queries=mixed))
+        )
+        monkeypatch.setattr(station, "search_subreddits", _make_search("startups"))
         result = await run_query_expansion(year_spec)
         assert {q.t for q in result.reddit_queries} == {"year"}
 
 
 class TestBaselineSubredditMerge:
-    """Skill item 9: always merge LLM-picked subs with the profile-agnostic
-    baseline (`r/startups`, `r/microsaas`, `r/smallbusiness`). Defense in
-    depth — even if the LLM picks bad subs the baseline keeps the adapter
-    useful.
-    """
-
-    async def test_merges_baseline_subs_into_plan(
-        self,
-        tmp_cache: Cache,
-        spec: JobSpec,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_baseline_appended_after_on_table_picks(
+        self, tmp_cache: Cache, spec: JobSpec, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # LLM picks only domain-specific subs; baseline should be added.
-        plan = JobPlan(
-            reddit_queries=[_valid_query(f"q{i}") for i in range(10)],
-            reddit_subreddits=["doggrooming", "groomers", "petbusiness"],
+        plan = _plan(subs=["doggrooming", "groomers", "petbusiness"])
+        monkeypatch.setattr(station, "call_openai", _make_call_openai(plan))
+        monkeypatch.setattr(
+            station,
+            "search_subreddits",
+            _make_search("doggrooming", "groomers", "petbusiness"),
         )
-
-        async def _stub_llm(**kwargs: Any) -> JobPlan:
-            return plan
-
-        monkeypatch.setattr(station, "call_openai", _stub_llm)
         result = await run_query_expansion(spec)
-
         for baseline in ("startups", "microsaas", "smallbusiness"):
-            assert baseline in result.reddit_subreddits, f"missing baseline sub {baseline!r}"
-        # LLM picks come first, baselines appended after
+            assert baseline in result.reddit_subreddits
         assert result.reddit_subreddits[:3] == [
             "doggrooming",
             "groomers",
             "petbusiness",
         ]
 
-    async def test_does_not_duplicate_baseline_when_llm_already_picked_it(
-        self,
-        tmp_cache: Cache,
-        spec: JobSpec,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_no_duplicate_when_llm_picked_a_baseline(
+        self, tmp_cache: Cache, spec: JobSpec, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """If the LLM already picked `smallbusiness`, it should appear once."""
-        plan = JobPlan(
-            reddit_queries=[_valid_query(f"q{i}") for i in range(10)],
-            reddit_subreddits=["smallbusiness", "Entrepreneur", "wholesale"],
+        plan = _plan(subs=["smallbusiness", "Entrepreneur", "wholesale"])
+        monkeypatch.setattr(station, "call_openai", _make_call_openai(plan))
+        monkeypatch.setattr(
+            station,
+            "search_subreddits",
+            _make_search("smallbusiness", "Entrepreneur", "wholesale"),
         )
-
-        async def _stub_llm(**kwargs: Any) -> JobPlan:
-            return plan
-
-        monkeypatch.setattr(station, "call_openai", _stub_llm)
         result = await run_query_expansion(spec)
-        # Count occurrences of smallbusiness — should be exactly 1
         assert result.reddit_subreddits.count("smallbusiness") == 1
-        # Other baselines should still be appended
         assert "startups" in result.reddit_subreddits
         assert "microsaas" in result.reddit_subreddits
