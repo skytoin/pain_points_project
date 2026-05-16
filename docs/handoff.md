@@ -1,12 +1,13 @@
 # Session handoff — discovery pipeline
 
 **Last touched:** 2026-05-16
-**Branch:** `claude/jovial-poitras-fd083f` (Subreddit-discovery slice —
-8 commits ahead of `main` @ `63beef5`. Wave 0 no longer names
-subreddits from LLM memory; it generates search *phrases* →
-`/subreddits/search` returns real subs → deterministic rank → a second
-grounded LLM call selects + designs the content queries. The earlier
-Wave 0 slice referenced below landed previously on a different branch.)
+**Branch:** `claude/jovial-poitras-fd083f`. The **subreddit-discovery
+slice** (grounded Wave 0: search *phrases* → `/subreddits/search` →
+deterministic rank → grounded selection) was merged to `main`
+(`ebe2bc2`). On top of that, this branch now carries the **wider
+query-band slice** (band 25–30 + industry-specific brainstorm, prompt
+v5) — not yet merged. See the two dated "what shipped" sections below,
+newest first.
 
 Read this first when picking the project back up. It tells you what
 exists, what decisions are locked in, and exactly where the next slice
@@ -47,7 +48,7 @@ unchanged `run_query_expansion(spec) -> JobPlan` signature:
 `/subreddits/search.json` per phrase → deterministic middle
 (dedupe+consensus → drop non-public/NSFW → median → drop
 drastically-below-median → activity_ratio) → LLM Call #2: grounded
-selection + v4 query design → off-table reject + ≤30 trim → unchanged
+selection + v5 query design → off-table reject + ≤30 trim → unchanged
 tail (`_drop_invalid_queries` → MIN_VALID_QUERIES → `_force_time_window`
 → `_merge_baseline_subreddits`)] → one combined cache entry keyed by
 `subreddit_phrases.VERSION + query_expansion.VERSION` → `Job.job_plan`
@@ -62,9 +63,10 @@ degradation path is reused; no new fallback branches. A combined-key
 cache hit skips phrase-gen, every sub-search, and selection in one
 shot (verified ~4 s vs ~2 min cold).
 
-**Test counts:** 229 unit tests, all green (was 165 before this slice;
-+64 across the 6 implementation commits). `ruff check`, `ruff format
---check`, `mypy src/` (strict), and `pytest` all pass.
+**Test counts:** 231 unit tests, all green (229 after the
+subreddit-discovery slice; +2 net from the wider query-band slice).
+`ruff check`, `ruff format --check`, `mypy src/` (strict), and
+`pytest` all pass.
 
 ---
 
@@ -72,6 +74,11 @@ shot (verified ~4 s vs ~2 min cold).
 
 | SHA       | Slice |
 |-----------|---|
+| `7aa7b9c` | `docs(station): correct stale v4/10-15/min_length refs after the v5 band change` |
+| `1eb7b6d` | `feat(llm): widen query band to 25-30 + industry-specific brainstorm (prompt v5)` (atomic) |
+| `6fd2555` | `docs(plan): wider query band implementation plan (2-chunk reviewed)` |
+| `d2ace37` | `docs(spec): wider query band (25-30) + industry-specific brainstorm design` |
+| —         | *↑ wider query-band slice (2026-05-16, on this branch) · ↓ subreddit-discovery slice (merged to `main` @ `ebe2bc2`)* |
 | `e92fd19` | `feat(llm): grounded subreddit discovery — prompt v4 + Wave 0 wiring` (Task 6+7, atomic) |
 | `d76bcc3` | `feat(llm): Call #1 prompt + SubredditSearchPhrases schema (v1)` |
 | `2451f33` | `feat(sources): /subreddits/search client (spec step 2)` |
@@ -196,7 +203,7 @@ a "why" attached — when in doubt, check the why before changing them.
 - **One Reddit task bundles all four queries.** `RedditSource.fetch`
   handles partial-success internally. Trade-off: per-query retry
   granularity is lost in exchange for fewer task rows. (Wave 0 now
-  produces 10-15 LLM queries, but they still all go in one task.)
+  produces 25-30 LLM queries, but they still all go in one task.)
 - **Two provider functions, no facade.** `call_anthropic` and
   `call_openai` are independent; no generic `call_llm` dispatcher.
   Each function handles its provider's quirks (Anthropic's top-level
@@ -306,6 +313,61 @@ orchestrator-agnostic; no station code changes needed.
 
 ---
 
+## Wider query band + industry brainstorm (2026-05-16) — what shipped & locked in
+
+Built from `docs/specs/2026-05-16-wider-query-band-design.md` (approved,
+4-pass spec-reviewed) via `docs/plans/2026-05-16-wider-query-band.md`
+(2-chunk plan-reviewed). The subreddit-discovery slice (below) is on
+`main` (`ebe2bc2`); this slice sits on top, not yet merged.
+
+**Problem:** a 1-month / 12-query run on "wedding photography" returned
+only 2 posts — the plan was too narrow (10–15 queries from the generic
+8-pain-category grid only).
+
+**What shipped — one atomic commit `1eb7b6d` + a docstring-only
+follow-up `7aa7b9c`:**
+
+- `JobPlan.reddit_queries` band **10–15 → 25–30** (`schemas.py`, one
+  `Field` line). **This supersedes the prior locked 10–15 decision.**
+  The new authority on the query band is
+  `docs/specs/2026-05-16-wider-query-band-design.md`. A future session
+  must NOT "restore" 10–15 as a regression.
+- `query_expansion` prompt **v4 → v5**: all count language → 25–30; a
+  new "Two kinds of queries" section — keep the generic pain-grid
+  (kind 1, industry-AGNOSTIC) AND additionally brainstorm
+  industry-specific queries (kind 2, re-derived for the requested
+  industry); a fenced ONE-industry illustration (wedding photography)
+  with an explicit "re-derive your own, never copy" guard; the
+  "don't make domain-specific phrase lists" generality rule was
+  **rescoped to the standard grid only** so the prompt no longer
+  self-contradicts; `build_user_message`'s user-turn count string is
+  the second 25–30 lever.
+- **Scoped reddit-source skill item-9 deviation:** kind-2 deliberately
+  bends item-9 (generality); kind-1 still honours it. Intentional,
+  user-approved, documented in the spec + prompt.
+- **Station logic UNCHANGED.** `MIN_VALID_QUERIES = 10` stays,
+  decoupled from the schema floor — pruning never collapses to the
+  template unless <10 valid survive; the tail's `model_construct`
+  means a pruned set is not re-validated against `min_length=25`. The
+  separate commit `7aa7b9c` only corrected the station's now-stale
+  docstrings (v4→v5, 10-15→25-30, min_length=10→25) — zero logic change.
+- `FEW_SHOT_EXAMPLES` still NOT wired into the LLM call (long-standing
+  deferred follow-up) — and now also visibly inconsistent (~10 example
+  queries vs the 25–30 band). Cosmetic only (dead data); still deferred.
+
+**Smoke (real gpt-5.4 + Reddit, 2026-05-16):** `discovery run
+--industry "wedding photography" --location US --time-window year` →
+`wave 0: planned`, `subreddit discovery: 120 candidates survived`,
+**28 queries** (8 generic pain-grid + 20 genuinely re-derived
+industry-specific: culling, editing backlog/turnaround, client gallery,
+contracts, deposits, client ghosting, CRM/booking, second shooter,
+"uncle bob"/unplugged ceremony, rain plan, intake forms, album/print
+lab, outsourcing editing — well beyond the prompt's 6-item
+illustration), 14 subs, **176 posts** stored vs **2** on the earlier
+1-month / 12-query run for the same industry. The wider band + the
+two-kinds composition is the recall fix; `--time-window` is the other
+(unchanged) lever. 231 tests green; `ruff`/`mypy` clean.
+
 ## Subreddit-discovery slice (2026-05-16) — what shipped & locked in
 
 Built from `docs/specs/2026-05-15-subreddit-discovery-design.md` via a
@@ -358,13 +420,17 @@ content queries with the unchanged v3 rules (prompt now v4).
   `f"{subreddit_phrases.VERSION}+{query_expansion.VERSION}"` passed to
   the *existing* `cache_key` (cache module unchanged). Bumping either
   VERSION re-runs phrase-gen + search + selection.
-- **`MIN_VALID_QUERIES=10`, `JobPlan.reddit_queries`
-  `min_length=10,max_length=15`, and the deterministic tail are
-  UNCHANGED.** Thin/niche tables still yield 10–15 queries via
-  pain-category × subreddit variety — this is BY DESIGN (spec §10).
-  Do **not** "fix" the floor or add a subreddit-count floor; the §10
-  "too few remain" is realized through the existing query-validation
-  floor only.
+- **`MIN_VALID_QUERIES=10` and the deterministic tail are UNCHANGED.**
+  The `JobPlan.reddit_queries` schema band, HOWEVER, was **superseded**
+  by the later wider-query-band slice — it is now `min_length=25,
+  max_length=30`, NOT 10–15 (see that dated section above; authority:
+  `docs/specs/2026-05-16-wider-query-band-design.md`; do not "restore"
+  10–15). The "do not relax the floor" guidance applies ONLY to
+  `MIN_VALID_QUERIES` (still 10, decoupled from the schema band so
+  pruning never collapses to the template unless <10 valid survive),
+  NOT to the schema band. Still do not add a subreddit-count floor; the
+  §10 "too few remain" is realized through the existing
+  query-validation (`MIN_VALID_QUERIES`) path only.
 - **Retry duplication is spec-sanctioned.** `reddit_subreddits.
   _get_with_retries` mirrors `reddit.py._fetch_with_retries` (the
   only divergence: 401/403 must raise, never empty). See follow-ups
