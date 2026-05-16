@@ -10,8 +10,8 @@ Internally it is now a multi-step process (spec §3):
     4. Deterministic middle (no LLM): dedupe+consensus → drop
        non-public → drop NSFW → median → drop drastically-below-median
        → activity_ratio.
-    5. LLM Call #2 (query_expansion v4) → JobPlan: selects ONLY from the
-       supplied table and designs the 10-15 content queries.
+    5. LLM Call #2 (query_expansion v5) → JobPlan: selects ONLY from the
+       supplied table and designs the 25-30 content queries.
     6. Defensive off-table reject + overflow trim (≤30, LLM order).
     7. EXISTING deterministic tail, UNCHANGED and order-preserved:
        _drop_invalid_queries → MIN_VALID_QUERIES → _force_time_window
@@ -224,7 +224,7 @@ def _merge_baseline_subreddits(plan: JobPlan) -> JobPlan:
 
 def _drop_invalid_queries(plan: JobPlan) -> JobPlan:
     """Keep only queries that pass `validate_reddit_query`. Uses
-    `model_construct` so the result skips the `min_length=10` check —
+    `model_construct` so the result skips the `min_length=25` check —
     the caller handles the "too few survived" case.
     """
     kept: list[RedditQuerySpec] = []
