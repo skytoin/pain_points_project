@@ -29,14 +29,11 @@ from aiolimiter import AsyncLimiter
 from loguru import logger
 
 from discovery.sources.base import BaseSource, RawRecord
+from discovery.sources.reddit_ratelimit import get_reddit_limiter
 
 _REDDIT_BASE = "https://www.reddit.com"
 _SUBREDDIT_RE = re.compile(r"^[A-Za-z0-9_]{3,21}$")
 _BODY_TRIM_LIMIT = 200
-
-# Skill item 3: ~10 requests/min unauthenticated. Use 60.1s to avoid
-# bunching at second boundaries.
-_DEFAULT_RATE = (10, 60.1)
 
 
 def validate_subreddit_name(raw: str) -> str | None:
@@ -140,7 +137,9 @@ class RedditSource(BaseSource):
         Awaitable sleep function. Tests inject a no-op; production uses
         `asyncio.sleep`. Always pass cancellation through (skill item 18).
     limiter :
-        Optional `AsyncLimiter`. Default = 10 req / 60.1s.
+        Optional `AsyncLimiter`. Default = the process-wide shared
+        Reddit limiter (skill item 3 — sub-search and content-fetch
+        must not each construct their own).
     min_score, min_comments :
         Quality-floor thresholds. Defaults from the skill.
     max_retries :
@@ -166,7 +165,7 @@ class RedditSource(BaseSource):
         self._client = client if client is not None else httpx.AsyncClient(timeout=timeout)
         self._owned_client = client is None
         self._sleep = sleep
-        self._limiter = limiter or AsyncLimiter(_DEFAULT_RATE[0], _DEFAULT_RATE[1])
+        self._limiter = limiter if limiter is not None else get_reddit_limiter()
         self._min_score = min_score
         self._min_comments = min_comments
         self._max_retries = max_retries
