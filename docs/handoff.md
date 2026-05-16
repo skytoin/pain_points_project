@@ -1,8 +1,12 @@
 # Session handoff — discovery pipeline
 
-**Last touched:** 2026-05-15
-**Branch:** `claude/quirky-mcclintock-17ee22` (Wave 0 slice — 13 commits
-ahead of `main` after the slice landed)
+**Last touched:** 2026-05-16
+**Branch:** `claude/jovial-poitras-fd083f` (Subreddit-discovery slice —
+8 commits ahead of `main` @ `63beef5`. Wave 0 no longer names
+subreddits from LLM memory; it generates search *phrases* →
+`/subreddits/search` returns real subs → deterministic rank → a second
+grounded LLM call selects + designs the content queries. The earlier
+Wave 0 slice referenced below landed previously on a different branch.)
 
 Read this first when picking the project back up. It tells you what
 exists, what decisions are locked in, and exactly where the next slice
@@ -37,18 +41,30 @@ done. 1 task(s) processed.
 ```
 
 After running, `data/discovery.db`'s `raw_records` table holds real
-Reddit posts. The pipeline goes:
-**JobSpec → create_job → plan_job (Wave 0, gpt-5.4) → enqueue_reddit_task_for_job
+Reddit posts. Wave 0 is now a multi-step grounded process inside the
+unchanged `run_query_expansion(spec) -> JobPlan` signature:
+**JobSpec → plan_job → [LLM Call #1: subreddit-search *phrases* →
+`/subreddits/search.json` per phrase → deterministic middle
+(dedupe+consensus → drop non-public/NSFW → median → drop
+drastically-below-median → activity_ratio) → LLM Call #2: grounded
+selection + v4 query design → off-table reject + ≤30 trim → unchanged
+tail (`_drop_invalid_queries` → MIN_VALID_QUERIES → `_force_time_window`
+→ `_merge_baseline_subreddits`)] → one combined cache entry keyed by
+`subreddit_phrases.VERSION + query_expansion.VERSION` → `Job.job_plan`
 → run_worker_once → RedditSource.fetch → raw_records rows.**
 
-When `OPENAI_API_KEY` is unset (or the LLM call fails / validation
-drops too many queries), `wave 0` prints `fallback` and the Reddit
-orchestrator uses the deterministic hand-rolled template — same as
-before Wave 0 shipped. End-to-end behavior is identical to the
-pre-Wave-0 run; only the query count and quality change.
+When `OPENAI_API_KEY` is unset, any LLM call fails, the sub-search
+totally wipes out, zero subs survive filtering, or too few content
+queries pass validation, the station raises `QueryExpansionError`,
+`wave 0` prints `fallback`, and the Reddit orchestrator uses the
+deterministic hand-rolled template — exactly as before. The proven
+degradation path is reused; no new fallback branches. A combined-key
+cache hit skips phrase-gen, every sub-search, and selection in one
+shot (verified ~4 s vs ~2 min cold).
 
-**Test counts:** 135 unit tests, all green. `ruff check`, `ruff format`,
-`mypy --strict`, and `pytest` all pass.
+**Test counts:** 229 unit tests, all green (was 165 before this slice;
++64 across the 6 implementation commits). `ruff check`, `ruff format
+--check`, `mypy src/` (strict), and `pytest` all pass.
 
 ---
 
@@ -56,6 +72,15 @@ pre-Wave-0 run; only the query count and quality change.
 
 | SHA       | Slice |
 |-----------|---|
+| `e92fd19` | `feat(llm): grounded subreddit discovery — prompt v4 + Wave 0 wiring` (Task 6+7, atomic) |
+| `d76bcc3` | `feat(llm): Call #1 prompt + SubredditSearchPhrases schema (v1)` |
+| `2451f33` | `feat(sources): /subreddits/search client (spec step 2)` |
+| `2f756a1` | `feat(llm): deterministic subreddit pipeline (spec §7)` |
+| `7a8dc90` | `feat(sources): SubredditCandidate/PhraseResult DTOs + table render` |
+| `aaf59a4` | `refactor(sources): shared process-wide Reddit limiter (spec step 0)` |
+| `df5af8e` | `chore(format): apply ruff format to pre-existing drift (baseline)` |
+| `4264d38` | `docs(plan): subreddit discovery implementation plan (5-chunk reviewed)` |
+| —         | *↑ subreddit-discovery slice (2026-05-16) · ↓ earlier Wave 0 slice* |
 | `23a4096` | `feat(cli): call plan_job between create_job and enqueue` |
 | `43de2c9` | `feat(orchestrator): Reddit reads from job.job_plan with template fallback` |
 | `65d12a4` | `feat(orchestrator): add plan_job (Wave 0 inline, fallback-safe)` |
@@ -237,8 +262,9 @@ topics, not loose guidelines.
 
 ## Next slice: open
 
-Wave 0 landed. The next slice is the user's call. Candidates, in
-rough order of payoff:
+Wave 0 landed, then was upgraded to **grounded subreddit discovery**
+(2026-05-16 slice — see the dedicated section below). The next slice
+is the user's call. Candidates, in rough order of payoff:
 
 1. **Wave 2 — Pain Classification LLM station.** Promotes raw Reddit
    posts (Bronze) into `pain_signals` rows (Silver). Anthropic
@@ -279,6 +305,88 @@ The promotion path is a ~20-line `wave_0_task` wrapper around
 orchestrator-agnostic; no station code changes needed.
 
 ---
+
+## Subreddit-discovery slice (2026-05-16) — what shipped & locked in
+
+Built from `docs/specs/2026-05-15-subreddit-discovery-design.md` via a
+5-chunk reviewed plan (`docs/plans/2026-05-16-subreddit-discovery.md`),
+8 commits on `main` @ `63beef5`. Every task: TDD → independent
+spec-compliance review → independent code-quality review → fix loop.
+
+**Problem solved:** Wave 0 used to ask the LLM to *name* subreddits
+from training memory (hallucination + staleness). Now the LLM emits
+semantic *search phrases*; Reddit's `/subreddits/search.json` returns
+real, currently-existing subreddits; deterministic code ranks them; a
+second grounded LLM call picks only from that table and designs the
+content queries with the unchanged v3 rules (prompt now v4).
+
+**New pieces (add to the map above):**
+
+- `src/discovery/sources/reddit_ratelimit.py` — process-wide shared
+  Reddit `AsyncLimiter` singleton (`get_reddit_limiter`,
+  `reset_reddit_limiter`). `RedditSource` defaults to it.
+- `src/discovery/sources/reddit_subreddits.py` — `SubredditCandidate`
+  / `PhraseResult` DTOs, `clean_description`, `render_candidate_table`
+  (the 6-col LLM table), `_SubredditT5` response model, and the async
+  `search_subreddits` client (401/403 raise, retry mirror of
+  `reddit.py`, partial success, per-request skill-21 log). NOT a
+  `BaseSource`; returns planning DTOs, never Bronze.
+- `src/discovery/llm/stations/subreddit_selection.py` — the pure
+  deterministic pipeline (`dedupe_and_count`, `drop_non_public`,
+  `drop_nsfw`, `subscriber_median`, `drop_below_median`,
+  `with_activity_ratio`, `reject_off_table`, `trim_overflow`).
+- `src/discovery/llm/prompts/subreddit_phrases.py` — Call #1 prompt
+  (`VERSION="v1"`). `schemas.py` gained `SubredditSearchPhrases`.
+- `src/discovery/llm/prompts/query_expansion.py` — `VERSION` v3→**v4**,
+  GROUNDING section added, `build_user_message(spec)` →
+  `build_user_message(spec, table)`.
+- `src/discovery/llm/stations/query_expansion.py` — `run_query_expansion`
+  rewritten into the multi-step flow; signature unchanged.
+
+**Decisions locked in (don't re-litigate):**
+
+- **One shared process-wide Reddit limiter.** Sub-search (Wave 0) and
+  content-fetch (Wave 1) share ONE 10/60.1s budget via the
+  `reddit_ratelimit` singleton. Never default-construct a second.
+- **Wave 0 = two LLM calls + a deterministic middle.** No LLM in the
+  ranking. Folded inside the existing inline "Option A" `plan_job`;
+  the Option-B promotion path still applies.
+- **The LLM in Call #2 may pick ONLY from the supplied table.** Off-
+  table picks are deterministically stripped (`reject_off_table`).
+  Selection is adaptive, hard ceiling 30, no minimum.
+- **One combined Wave 0 cache entry**, key
+  `f"{subreddit_phrases.VERSION}+{query_expansion.VERSION}"` passed to
+  the *existing* `cache_key` (cache module unchanged). Bumping either
+  VERSION re-runs phrase-gen + search + selection.
+- **`MIN_VALID_QUERIES=10`, `JobPlan.reddit_queries`
+  `min_length=10,max_length=15`, and the deterministic tail are
+  UNCHANGED.** Thin/niche tables still yield 10–15 queries via
+  pain-category × subreddit variety — this is BY DESIGN (spec §10).
+  Do **not** "fix" the floor or add a subreddit-count floor; the §10
+  "too few remain" is realized through the existing query-validation
+  floor only.
+- **Retry duplication is spec-sanctioned.** `reddit_subreddits.
+  _get_with_retries` mirrors `reddit.py._fetch_with_retries` (the
+  only divergence: 401/403 must raise, never empty). See follow-ups
+  for the deferred DRY extraction.
+
+**Smoke verified (real OpenAI gpt-5.4 + real Reddit), 2026-05-16:**
+
+- Rich — `discovery run --industry "food truck" --location US`:
+  `wave 0: planned`, 13 LLM-authored queries, real posts (r/austinfood,
+  r/foodtrucks).
+- Niche — `--industry "mobile dog grooming" --location US
+  --time-window year`: `wave 0: planned`, `subreddit discovery: 71
+  candidates survived (median subs=91957.5)`, 13 queries, 6 posts, 5
+  per-phrase skill-21 `subreddit search done` log lines. Confirms a
+  niche table still produces 10–15 queries and does NOT auto-fallback.
+- Cache re-hit (same niche spec): ~4 s, `wave 0: planned`, **0**
+  sub-search lines — the combined cache entry skips phrase-gen +
+  search + selection in one shot (spec §8).
+
+No `fallback` / `QueryExpansionError` in any run. 229 unit tests green;
+`test_orchestrator_jobs.py` untouched & green (it stubs
+`run_query_expansion(spec)->JobPlan`; signature unchanged).
 
 ## How to verify the project is healthy when you resume
 
@@ -332,6 +440,24 @@ clean.
 
 ## Open follow-ups (smaller, not blocking the next slice)
 
+- **DRY the Reddit retry policy.** `reddit.py._fetch_with_retries` and
+  `reddit_subreddits._get_with_retries` duplicate the skill-item-4
+  policy (intentional, spec-sanctioned mirror — extraction was out of
+  step-0 scope). Extract a shared `reddit_http` retry helper when
+  convenient; the only behavioral difference to preserve is sub-search
+  401/403 → raise (never empty).
+- **`FEW_SHOT_EXAMPLES` is never sent to the LLM.** Pre-existing (true
+  in pre-feature Wave 0 too): `query_expansion.py` defines
+  `FEW_SHOT_EXAMPLES` but `call_openai` only takes `system`+`user`, and
+  neither `SYSTEM_PROMPT` nor `build_user_message` injects it. Either
+  serialize it into the prompt or rename it `_REFERENCE_EXAMPLES` and
+  retarget its shape test. Orthogonal to subreddit discovery; needs its
+  own behavior-validation if wired in.
+- **Tunables to revisit with real Item-21 data (spec §13):** the
+  `DRASTIC_FLOOR_DIVISOR = 10` median divisor and the ~5 phrase count
+  (prompt-tunable, no code change). The niche smoke showed median
+  subs ≈ 92k for "mobile dog grooming" — gather more distributions
+  before tuning.
 - `run_worker_loop` + `discovery work` CLI command (drain queue
   continuously). Trivial.
 - VCR cassette for the Reddit happy-path test (requires recording
