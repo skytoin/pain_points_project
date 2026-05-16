@@ -1,7 +1,9 @@
 """Pydantic schemas for LLM station outputs.
 
-One model per station's output, plus shared sub-models. The output of
-the Wave 0 (Query Expansion) station is `JobPlan`.
+One model per station's output, plus shared sub-models. Wave 0 has two
+LLM calls: Call #1 emits `SubredditSearchPhrases` (intermediate — NOT
+cached separately, see spec §8) and Call #2 emits `JobPlan` (the
+station's final, cached output).
 
 NOTE TO FUTURE SESSIONS
 -----------------------
@@ -89,3 +91,17 @@ class JobPlan(BaseModel):
 
     reddit_queries: list[RedditQuerySpec] = Field(min_length=10, max_length=15)
     reddit_subreddits: list[str] = Field(default_factory=list)
+
+
+class SubredditSearchPhrases(BaseModel):
+    """Wave 0 LLM Call #1 output: semantic phrases to SEARCH Reddit's
+    subreddit index with — NOT subreddit names (spec §6 prompt #1).
+    Strict + frozen by design: this is an ephemeral intermediate,
+    consumed immediately within the station and never persisted to the
+    DB, so (unlike `JobPlan`'s `extra="allow"`) an unexpected extra
+    field should fail loudly rather than be silently round-tripped.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    phrases: list[str] = Field(min_length=3, max_length=8)

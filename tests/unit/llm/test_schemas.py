@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from discovery.llm.schemas import JobPlan, RedditQuerySpec
+from discovery.llm.schemas import JobPlan, RedditQuerySpec, SubredditSearchPhrases
 
 
 def _good_query(q: str = '"I would pay"') -> RedditQuerySpec:
@@ -119,3 +119,21 @@ class TestRedditQuerySpecSubreddit:
             rationale="r",
         )
         assert spec.subreddit is None
+
+
+class TestSubredditSearchPhrases:
+    def test_accepts_three_to_eight_phrases(self) -> None:
+        m = SubredditSearchPhrases(phrases=["a", "b", "c"])
+        assert m.phrases == ["a", "b", "c"]
+
+    def test_rejects_fewer_than_three(self) -> None:
+        with pytest.raises(ValidationError):
+            SubredditSearchPhrases(phrases=["a", "b"])
+
+    def test_accepts_eight_phrases(self) -> None:
+        m = SubredditSearchPhrases(phrases=[str(i) for i in range(8)])
+        assert len(m.phrases) == 8
+
+    def test_rejects_more_than_eight(self) -> None:
+        with pytest.raises(ValidationError):
+            SubredditSearchPhrases(phrases=[str(i) for i in range(9)])
