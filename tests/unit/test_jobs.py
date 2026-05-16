@@ -90,9 +90,7 @@ class TestJobSpecTimeWindow:
 
     def test_accepts_all_reddit_values(self) -> None:
         for value in ("hour", "day", "week", "month", "year", "all"):
-            spec = JobSpec(
-                industry="x", as_of=date(2026, 6, 1), time_window=value
-            )
+            spec = JobSpec(industry="x", as_of=date(2026, 6, 1), time_window=value)
             assert spec.time_window == value
 
     def test_rejects_invalid_value(self) -> None:
@@ -108,9 +106,7 @@ class TestJobSpecTimeWindow:
         spec_hashes so monthly vs yearly runs don't collide in the cache."""
         a = JobSpec(industry="x", as_of=date(2026, 6, 1), time_window="month")
         b = JobSpec(industry="x", as_of=date(2026, 6, 1), time_window="year")
-        assert hash_params(a.model_dump(mode="json")) != hash_params(
-            b.model_dump(mode="json")
-        )
+        assert hash_params(a.model_dump(mode="json")) != hash_params(b.model_dump(mode="json"))
 
 
 # --- create_job -------------------------------------------------------------

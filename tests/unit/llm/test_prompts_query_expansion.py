@@ -62,9 +62,7 @@ class TestBuildUserMessage:
     def test_includes_time_window(self) -> None:
         """The LLM is told the search-window choice so it can match it
         in each query's `t` field."""
-        spec = JobSpec(
-            industry="x", as_of=date(2026, 6, 1), time_window="year"
-        )
+        spec = JobSpec(industry="x", as_of=date(2026, 6, 1), time_window="year")
         msg = qe.build_user_message(spec)
         assert "year" in msg.lower()
 

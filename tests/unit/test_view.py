@@ -78,9 +78,7 @@ class TestGatherJobSummaries:
         assert await gather_job_summaries(session) == []
 
     async def test_one_job_no_plan_no_posts(self, session: AsyncSession) -> None:
-        job = await create_job(
-            session, JobSpec(industry="x", as_of=date(2026, 6, 1))
-        )
+        job = await create_job(session, JobSpec(industry="x", as_of=date(2026, 6, 1)))
         rows = await gather_job_summaries(session)
         assert len(rows) == 1
         s = rows[0]
@@ -91,9 +89,7 @@ class TestGatherJobSummaries:
         assert s.post_count == 0
 
     async def test_one_job_planned_with_posts(self, session: AsyncSession) -> None:
-        job = await create_job(
-            session, JobSpec(industry="food truck", as_of=date(2026, 6, 1))
-        )
+        job = await create_job(session, JobSpec(industry="food truck", as_of=date(2026, 6, 1)))
         job.job_plan = _plan().model_dump()
         session.add(job)
         await session.commit()
@@ -113,9 +109,7 @@ class TestGatherJobDetail:
         assert await gather_job_detail(session, job_id=999) is None
 
     async def test_returns_plan_and_posts(self, session: AsyncSession) -> None:
-        job = await create_job(
-            session, JobSpec(industry="food truck", as_of=date(2026, 6, 1))
-        )
+        job = await create_job(session, JobSpec(industry="food truck", as_of=date(2026, 6, 1)))
         job.job_plan = _plan(n=11).model_dump()
         session.add(job)
         await session.commit()
@@ -135,12 +129,8 @@ class TestGatherJobDetail:
         assert detail.posts[0].score == 42
         assert detail.posts[0].permalink.startswith("/r/")
 
-    async def test_post_limit_caps_returned_posts(
-        self, session: AsyncSession
-    ) -> None:
-        job = await create_job(
-            session, JobSpec(industry="x", as_of=date(2026, 6, 1))
-        )
+    async def test_post_limit_caps_returned_posts(self, session: AsyncSession) -> None:
+        job = await create_job(session, JobSpec(industry="x", as_of=date(2026, 6, 1)))
         assert job.id is not None
         for i in range(20):
             await _insert_post(session, job.id, f"p{i}", f"title {i}", score=i)
@@ -151,9 +141,7 @@ class TestGatherJobDetail:
 
     async def test_handles_job_with_no_plan(self, session: AsyncSession) -> None:
         """Fallback path: a job with no job_plan still shows up with detail.plan = None."""
-        job = await create_job(
-            session, JobSpec(industry="x", as_of=date(2026, 6, 1))
-        )
+        job = await create_job(session, JobSpec(industry="x", as_of=date(2026, 6, 1)))
         assert job.id is not None
         detail = await gather_job_detail(session, job_id=job.id)
         assert detail is not None

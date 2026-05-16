@@ -362,9 +362,7 @@ def build_user_message(spec: JobSpec) -> str:
         lines.append(f"Location: {spec.location}")
     if spec.size is not None:
         lines.append(f"Company size: {spec.size}")
-    lines.append(
-        f"Search time window (Reddit `t`): {spec.time_window}"
-    )
+    lines.append(f"Search time window (Reddit `t`): {spec.time_window}")
     lines.append("")
     lines.append(
         "Produce a JobPlan with 10-15 reddit_queries and a shortlist "

@@ -48,7 +48,7 @@ async def _run_jobs() -> None:
     if not rows:
         console.print(
             "[yellow]No jobs yet.[/yellow] "
-            "Run [bold]uv run discovery run --industry \"...\"[/bold] to create one."
+            'Run [bold]uv run discovery run --industry "..."[/bold] to create one.'
         )
         return
 
@@ -72,9 +72,7 @@ async def _run_jobs() -> None:
             r.created_at.strftime("%Y-%m-%d %H:%M"),
         )
     console.print(table)
-    console.print(
-        "\n[dim]Inspect one: [bold]uv run discovery show <id>[/bold][/dim]"
-    )
+    console.print("\n[dim]Inspect one: [bold]uv run discovery show <id>[/bold][/dim]")
 
 
 # ---- discovery show <id> ----------------------------------------------------
@@ -97,9 +95,7 @@ async def _run_show(job_id: int, post_limit: int) -> None:
     engine = get_engine()
     try:
         async with async_session_factory(engine)() as session:
-            detail = await gather_job_detail(
-                session, job_id=job_id, post_limit=post_limit
-            )
+            detail = await gather_job_detail(session, job_id=job_id, post_limit=post_limit)
     finally:
         await engine.dispose()
 
@@ -151,11 +147,7 @@ def _render_plan(detail: JobDetail) -> None:
     plan = detail.plan
     console.print(
         f"[bold]LLM plan[/bold] ({len(plan.reddit_queries)} queries"
-        + (
-            f", {len(plan.reddit_subreddits)} subs shortlisted"
-            if plan.reddit_subreddits
-            else ""
-        )
+        + (f", {len(plan.reddit_subreddits)} subs shortlisted" if plan.reddit_subreddits else "")
         + ")"
     )
     if plan.reddit_subreddits:
@@ -185,8 +177,7 @@ def _render_posts(posts: list[PostView], *, total: int) -> None:
         console.print()
         console.print(f"  [bold]{p.title}[/bold]")
         console.print(
-            f"  [dim]r/{p.subreddit}  ·  {p.score} upvotes  ·  "
-            f"{p.num_comments} comments[/dim]"
+            f"  [dim]r/{p.subreddit}  ·  {p.score} upvotes  ·  {p.num_comments} comments[/dim]"
         )
         console.print(f"  [blue]https://reddit.com{p.permalink}[/blue]")
         if p.body_preview:

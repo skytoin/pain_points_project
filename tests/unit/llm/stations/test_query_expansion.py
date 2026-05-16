@@ -177,9 +177,7 @@ class TestTimeWindowOverride:
         tmp_cache: Cache,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        year_spec = JobSpec(
-            industry="x", as_of=date(2026, 6, 1), time_window="year"
-        )
+        year_spec = JobSpec(industry="x", as_of=date(2026, 6, 1), time_window="year")
         # LLM returns queries with mixed `t` values — we should clobber them.
         mixed = [
             RedditQuerySpec(
@@ -225,9 +223,7 @@ class TestBaselineSubredditMerge:
         result = await run_query_expansion(spec)
 
         for baseline in ("startups", "microsaas", "smallbusiness"):
-            assert baseline in result.reddit_subreddits, (
-                f"missing baseline sub {baseline!r}"
-            )
+            assert baseline in result.reddit_subreddits, f"missing baseline sub {baseline!r}"
         # LLM picks come first, baselines appended after
         assert result.reddit_subreddits[:3] == [
             "doggrooming",

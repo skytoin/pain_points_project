@@ -129,6 +129,4 @@ def run_command(
 ) -> None:
     """Run a discovery slice: create the job, enqueue Reddit tasks, drain the queue."""
     anchor = date.today() if as_of == "today" else date.fromisoformat(as_of)
-    asyncio.run(
-        _run_discovery(industry, location, size, anchor, time_window)
-    )
+    asyncio.run(_run_discovery(industry, location, size, anchor, time_window))
