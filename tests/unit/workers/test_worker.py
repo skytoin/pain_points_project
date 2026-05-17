@@ -26,6 +26,7 @@ from discovery.db.models import Job, RawRecordRow, Task, TaskStatus
 from discovery.sources.base import BaseSource, RawRecord
 from discovery.workers.worker import (
     SourceRegistry,
+    aclose_registry,
     claim_one,
     run_one,
     run_worker_once,
@@ -378,3 +379,35 @@ class TestSweepStuckTasks:
         await session.refresh(task)
         assert n == 0
         assert task.status == TaskStatus.running
+
+
+# --- aclose_registry --------------------------------------------------------
+
+
+class TestAcloseRegistry:
+    async def test_calls_aclose_on_each_adapter(self) -> None:
+        """Every adapter's aclose() is awaited (releases owned HTTP clients)."""
+        closed: list[str] = []
+
+        class ClosableSource(BaseSource):
+            name = "fake"
+            rate_limit = (1000, 60)
+
+            def __init__(self, tag: str) -> None:
+                self._tag = tag
+
+            async def fetch(self, params: dict[str, Any]) -> list[RawRecord]:
+                return []
+
+            async def aclose(self) -> None:
+                closed.append(self._tag)
+
+        registry: SourceRegistry = {"a": ClosableSource("a"), "b": ClosableSource("b")}
+        await aclose_registry(registry)
+        assert sorted(closed) == ["a", "b"]
+
+    async def test_default_base_aclose_is_safe_noop(self) -> None:
+        """A source that does not override aclose is still closeable via the
+        BaseSource default (must not raise)."""
+        registry: SourceRegistry = {"fake": FakeSource([])}
+        await aclose_registry(registry)

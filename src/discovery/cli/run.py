@@ -28,7 +28,7 @@ from discovery.jobs import JobSpec, create_job
 from discovery.orchestrator.jobs import plan_job
 from discovery.orchestrator.reddit import enqueue_reddit_task_for_job
 from discovery.view import gather_job_detail
-from discovery.workers import build_default_registry, run_worker_once
+from discovery.workers import aclose_registry, build_default_registry, run_worker_once
 
 console = Console()
 
@@ -94,6 +94,7 @@ async def _run_discovery(
                     console.print()
                     render_job_detail(detail)
     finally:
+        await aclose_registry(registry)
         await engine.dispose()
 
 

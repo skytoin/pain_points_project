@@ -11,6 +11,8 @@ Public surface
 - `claim_one(session)` — atomically claim one queued task, or None.
 - `run_one(session, registry, task)` — dispatch + persist + finalize.
 - `run_worker_once(session, registry)` — `claim_one` + `run_one`.
+- `aclose_registry(registry)` — close every adapter (release owned HTTP
+  clients) at worker shutdown.
 - `sweep_stuck_tasks(session, idle_minutes)` — recover tasks orphaned by
   worker crashes; either requeue (retries left) or mark failed.
 - `SourceRegistry` — alias for `dict[str, BaseSource]`. The worker
@@ -150,6 +152,17 @@ async def sweep_stuck_tasks(
     if touched:
         await session.commit()
     return touched
+
+
+async def aclose_registry(registry: SourceRegistry) -> None:
+    """Close every adapter in the registry (release owned HTTP clients).
+
+    Call once when a worker process shuts down. Adapters that own no
+    resources inherit `BaseSource.aclose`'s no-op, so this is safe for
+    every registry regardless of which adapters it holds.
+    """
+    for adapter in registry.values():
+        await adapter.aclose()
 
 
 # --- internals --------------------------------------------------------------

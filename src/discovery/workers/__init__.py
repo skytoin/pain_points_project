@@ -14,6 +14,7 @@ from __future__ import annotations
 from discovery.sources.base import BaseSource
 from discovery.workers.worker import (
     SourceRegistry,
+    aclose_registry,
     claim_one,
     run_one,
     run_worker_once,
@@ -38,6 +39,7 @@ def build_default_registry() -> SourceRegistry:
 
 __all__ = [
     "SourceRegistry",
+    "aclose_registry",
     "build_default_registry",
     "claim_one",
     "run_one",

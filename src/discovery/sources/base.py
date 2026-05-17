@@ -69,3 +69,12 @@ class BaseSource(abc.ABC):
             Zero or more records. Return `[]`, never `None`.
         """
         ...
+
+    async def aclose(self) -> None:
+        """Release any resources the adapter owns (e.g. an HTTP client).
+
+        Default is a no-op; adapters that own a client (like
+        `RedditSource`) override this. Called once per worker process at
+        shutdown via `discovery.workers.aclose_registry`.
+        """
+        return None
