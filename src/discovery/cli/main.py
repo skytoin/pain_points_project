@@ -17,6 +17,7 @@ from rich.console import Console
 from discovery import __version__
 from discovery.cli.inspect import jobs_command, show_command
 from discovery.cli.run import run_command
+from discovery.cli.work import work_command
 
 app = typer.Typer(
     name="discovery",
@@ -40,6 +41,7 @@ def hello(name: str = "world") -> None:
 
 
 app.command(name="run")(run_command)
+app.command(name="work")(work_command)
 app.command(name="jobs")(jobs_command)
 app.command(name="show")(show_command)
 

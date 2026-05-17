@@ -17,6 +17,7 @@ from discovery.workers.worker import (
     aclose_registry,
     claim_one,
     run_one,
+    run_worker_drain,
     run_worker_once,
     sweep_stuck_tasks,
 )
@@ -43,6 +44,7 @@ __all__ = [
     "build_default_registry",
     "claim_one",
     "run_one",
+    "run_worker_drain",
     "run_worker_once",
     "sweep_stuck_tasks",
 ]

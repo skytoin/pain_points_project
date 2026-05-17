@@ -29,6 +29,7 @@ from discovery.workers.worker import (
     aclose_registry,
     claim_one,
     run_one,
+    run_worker_drain,
     run_worker_once,
     sweep_stuck_tasks,
 )
@@ -411,3 +412,25 @@ class TestAcloseRegistry:
         BaseSource default (must not raise)."""
         registry: SourceRegistry = {"fake": FakeSource([])}
         await aclose_registry(registry)
+
+
+# --- run_worker_drain -------------------------------------------------------
+
+
+class TestRunWorkerDrain:
+    async def test_drains_all_queued_tasks(self, session: AsyncSession) -> None:
+        """Processes every queued task and returns the count."""
+        job = await _make_job(session)
+        await _queue_task(session, job.id, source="fake", content_hash="a" * 64)
+        await _queue_task(session, job.id, source="fake", content_hash="b" * 64)
+        await _queue_task(session, job.id, source="fake", content_hash="c" * 64)
+
+        registry: SourceRegistry = {"fake": FakeSource([_record("e1")])}
+        n = await run_worker_drain(session, registry)
+
+        assert n == 3
+        assert await run_worker_once(session, registry) is None  # queue drained
+
+    async def test_empty_queue_returns_zero(self, session: AsyncSession) -> None:
+        registry: SourceRegistry = {}
+        assert await run_worker_drain(session, registry) == 0

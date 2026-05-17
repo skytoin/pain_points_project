@@ -11,6 +11,8 @@ Public surface
 - `claim_one(session)` — atomically claim one queued task, or None.
 - `run_one(session, registry, task)` — dispatch + persist + finalize.
 - `run_worker_once(session, registry)` — `claim_one` + `run_one`.
+- `run_worker_drain(session, registry)` — `run_worker_once` in a loop
+  until the queue is empty; returns the count processed.
 - `aclose_registry(registry)` — close every adapter (release owned HTTP
   clients) at worker shutdown.
 - `sweep_stuck_tasks(session, idle_minutes)` — recover tasks orphaned by
@@ -152,6 +154,19 @@ async def sweep_stuck_tasks(
     if touched:
         await session.commit()
     return touched
+
+
+async def run_worker_drain(session: AsyncSession, registry: SourceRegistry) -> int:
+    """Process queued tasks until the queue is empty; return the count.
+
+    A one-shot drain (not a daemon): repeatedly calls `run_worker_once`
+    until it returns `None`. Single-worker per CLAUDE.md — no polling,
+    no concurrency.
+    """
+    processed = 0
+    while await run_worker_once(session, registry) is not None:
+        processed += 1
+    return processed
 
 
 async def aclose_registry(registry: SourceRegistry) -> None:
