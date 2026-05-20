@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from discovery.llm.schemas import JobPlan, RedditQuerySpec, SubredditSearchPhrases
+from discovery.llm.schemas import (
+    HackerNewsKeywordSpec,
+    JobPlan,
+    RedditQuerySpec,
+    SubredditSearchPhrases,
+)
 
 
 def _good_query(q: str = '"I would pay"') -> RedditQuerySpec:
@@ -142,3 +147,32 @@ class TestSubredditSearchPhrases:
     def test_rejects_more_than_eight(self) -> None:
         with pytest.raises(ValidationError):
             SubredditSearchPhrases(phrases=[str(i) for i in range(9)])
+
+
+class TestHackerNewsKeywordSpec:
+    def test_minimal_valid(self) -> None:
+        spec = HackerNewsKeywordSpec(
+            keyword="local-first CRM",
+            intent="launch",
+            rationale="Show HN local-first CRM launches",
+        )
+        assert spec.keyword == "local-first CRM"
+        assert spec.intent == "launch"
+        assert spec.rationale == "Show HN local-first CRM launches"
+
+    def test_intent_must_be_launch_or_context(self) -> None:
+        with pytest.raises(ValidationError):
+            HackerNewsKeywordSpec(keyword="x", intent="other", rationale="r")  # type: ignore[arg-type]
+
+    def test_keyword_min_length(self) -> None:
+        with pytest.raises(ValidationError):
+            HackerNewsKeywordSpec(keyword="", intent="launch", rationale="r")
+
+    def test_rationale_min_length(self) -> None:
+        with pytest.raises(ValidationError):
+            HackerNewsKeywordSpec(keyword="x", intent="launch", rationale="")
+
+    def test_frozen_blocks_assignment(self) -> None:
+        spec = HackerNewsKeywordSpec(keyword="x", intent="launch", rationale="r")
+        with pytest.raises(ValidationError):
+            spec.keyword = "y"  # type: ignore[misc]

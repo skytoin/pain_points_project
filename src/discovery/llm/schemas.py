@@ -80,6 +80,38 @@ class RedditQuerySpec(BaseModel):
         return self
 
 
+class HackerNewsKeywordSpec(BaseModel):
+    """Wave 0 LLM HN keyword candidate. Python downstream decomposes,
+    routes by intent, and compiles to an Algolia URL. Schema lives in
+    spec §7; deterministic routing table is in §10. See
+    `docs/specs/2026-05-20-hackernews-source-design.md`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    keyword: str = Field(
+        min_length=1,
+        max_length=80,
+        description=(
+            "Raw HN-suitable phrase, 2-4 words, casing preserved. "
+            "Python keeps the first 2 surviving content tokens after "
+            "stopword stripping; long phrases lose their tail tokens."
+        ),
+    )
+    intent: Literal["launch", "context"] = Field(
+        description=(
+            "launch -> fired against /search_by_date with tags=show_hn "
+            "and a relaxed quality floor (recency is the signal). "
+            "context -> fired against /search with tags=story and the "
+            "standard points/num_comments floor."
+        ),
+    )
+    rationale: str = Field(
+        min_length=1,
+        description="Why this HN candidate is worth running.",
+    )
+
+
 class JobPlan(BaseModel):
     """LLM-produced query plan for one Job. Wave 0's output.
 
