@@ -17,8 +17,11 @@ Don't reach into `plan.model_extra["youtube_queries"]` from app code;
 that's a bug-magnet because the field isn't validated. Add the field,
 then use it.
 
-The fields below are the only ones Wave 0 needs today: Reddit-shaped
-because Reddit is the only source built so far.
+The fields below are what Wave 0 needs today: Reddit fields
+(`reddit_queries`, `reddit_subreddits`) and HN field (`hn_queries`).
+Each is consumed by its respective orchestrator under
+`discovery.orchestrator.`. Adding a new source means: add a typed
+field here AND wire its orchestrator there.
 """
 
 from __future__ import annotations
@@ -123,6 +126,16 @@ class JobPlan(BaseModel):
 
     reddit_queries: list[RedditQuerySpec] = Field(min_length=25, max_length=30)
     reddit_subreddits: list[str] = Field(default_factory=list)
+    hn_queries: list[HackerNewsKeywordSpec] = Field(
+        default_factory=list,
+        description=(
+            "Wave 0 HN keyword candidates. Permissive default (no "
+            "min_length) is deliberate: a strict floor would let HN "
+            "under-production raise QueryExpansionError and sink the "
+            "Reddit grounded plan. HN sparsity must degrade gracefully "
+            "to the no-LLM template in orchestrator/hackernews.py."
+        ),
+    )
 
 
 class SubredditSearchPhrases(BaseModel):
