@@ -27,6 +27,7 @@ from discovery.sources.base import BaseSource, RawRecord
 from discovery.workers.worker import (
     SourceRegistry,
     aclose_registry,
+    claim_known_task,
     claim_one,
     run_one,
     run_worker_drain,
@@ -434,3 +435,102 @@ class TestRunWorkerDrain:
     async def test_empty_queue_returns_zero(self, session: AsyncSession) -> None:
         registry: SourceRegistry = {}
         assert await run_worker_drain(session, registry) == 0
+
+
+# --- claim_known_task -------------------------------------------------------
+
+
+class TestClaimKnownTask:
+    """The additive per-id claim that routes around `claim_one`'s
+    documented single-worker race. Mirror file-test patterns from
+    `TestClaimOne`."""
+
+    async def test_claims_queued_task_atomically(self, session: AsyncSession) -> None:
+        """Happy path: claims a queued task, flipping status to running,
+        stamping claimed_at, and incrementing attempts."""
+        job = Job(
+            spec={"industry": "x", "as_of": "2026-05-20", "time_window": "month"}, spec_hash="h"
+        )
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+
+        task = Task(
+            job_id=job.id,
+            wave=1,
+            source="reddit",
+            action="fetch",
+            params={"queries": []},
+            content_hash="taskhash",
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+
+        claimed = await claim_known_task(session, task.id)
+
+        assert claimed is not None
+        assert claimed.id == task.id
+        assert claimed.status == TaskStatus.running
+        assert claimed.claimed_at is not None
+        assert claimed.attempts == 1
+
+    async def test_returns_none_when_task_already_running(self, session: AsyncSession) -> None:
+        """Race-safety contract: the WHERE clause includes status=queued
+        so a second claim returns None instead of double-running."""
+        job = Job(
+            spec={"industry": "x", "as_of": "2026-05-20", "time_window": "month"}, spec_hash="h"
+        )
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+
+        task = Task(
+            job_id=job.id,
+            wave=1,
+            source="reddit",
+            action="fetch",
+            params={"queries": []},
+            content_hash="taskhash2",
+            status=TaskStatus.running,
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+
+        result = await claim_known_task(session, task.id)
+        assert result is None
+
+    async def test_returns_none_for_nonexistent_task_id(self, session: AsyncSession) -> None:
+        result = await claim_known_task(session, 999_999)
+        assert result is None
+
+    async def test_double_claim_on_same_id_returns_none_second_time(
+        self, session: AsyncSession
+    ) -> None:
+        """Sequential demonstration of the contract: first call wins,
+        second sees status='running' and returns None."""
+        job = Job(
+            spec={"industry": "x", "as_of": "2026-05-20", "time_window": "month"}, spec_hash="h"
+        )
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+
+        task = Task(
+            job_id=job.id,
+            wave=1,
+            source="reddit",
+            action="fetch",
+            params={"queries": []},
+            content_hash="taskhash3",
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+
+        first = await claim_known_task(session, task.id)
+        second = await claim_known_task(session, task.id)
+
+        assert first is not None
+        assert second is None

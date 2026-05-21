@@ -9,6 +9,7 @@ multi-worker safety.
 Public surface
 --------------
 - `claim_one(session)` — atomically claim one queued task, or None.
+- `claim_known_task(session, task_id)` — race-safe per-id claim, or None.
 - `run_one(session, registry, task)` — dispatch + persist + finalize.
 - `run_worker_once(session, registry)` — `claim_one` + `run_one`.
 - `run_worker_drain(session, registry)` — `run_worker_once` in a loop
@@ -27,6 +28,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from loguru import logger
+from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -66,6 +68,43 @@ async def claim_one(session: AsyncSession) -> Task | None:
     await session.commit()
     await session.refresh(task)
     return task
+
+
+async def claim_known_task(session: AsyncSession, task_id: int) -> Task | None:
+    """Atomically flip a SPECIFIC task from queued to running.
+
+    Race-safe per-id claim: the UPDATE's WHERE clause includes
+    `status='queued'`, so SQLite's per-transaction lock serializes
+    concurrent callers -- at most one sees the row as queued and the
+    others' UPDATE matches zero rows.
+
+    This is the additive per-id analog of `claim_one`. `claim_one` is
+    documented single-worker-safe only (SELECT-then-UPDATE pair); this
+    helper is the minimum addition that lets `cli/run.py`'s parallel
+    fan-out claim two known task ids concurrently without lifting the
+    single-worker assumption from CLAUDE.md.
+
+    Returns the claimed Task on success, None if the task was already
+    claimed / not queued / nonexistent.
+
+    See `docs/specs/2026-05-20-hackernews-source-design.md` §12.
+    """
+    now = datetime.now(UTC)
+    stmt = (
+        sa_update(Task)
+        .where(col(Task.id) == task_id, col(Task.status) == TaskStatus.queued)
+        .values(
+            status=TaskStatus.running,
+            claimed_at=now,
+            attempts=Task.attempts + 1,
+        )
+    )
+    result = await session.exec(stmt)
+    if result.rowcount == 0:
+        await session.rollback()
+        return None
+    await session.commit()
+    return await session.get(Task, task_id)
 
 
 async def run_one(

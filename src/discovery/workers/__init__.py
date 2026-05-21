@@ -15,6 +15,7 @@ from discovery.sources.base import BaseSource
 from discovery.workers.worker import (
     SourceRegistry,
     aclose_registry,
+    claim_known_task,
     claim_one,
     run_one,
     run_worker_drain,
@@ -42,6 +43,7 @@ __all__ = [
     "SourceRegistry",
     "aclose_registry",
     "build_default_registry",
+    "claim_known_task",
     "claim_one",
     "run_one",
     "run_worker_drain",
