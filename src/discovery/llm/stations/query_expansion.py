@@ -36,7 +36,12 @@ from discovery.jobs import JobSpec
 from discovery.llm.cache import cache_key, get_cached, make_cache, put_cached
 from discovery.llm.client import call_openai
 from discovery.llm.prompts import query_expansion, subreddit_phrases
-from discovery.llm.schemas import JobPlan, RedditQuerySpec, SubredditSearchPhrases
+from discovery.llm.schemas import (
+    HackerNewsKeywordSpec,
+    JobPlan,
+    RedditQuerySpec,
+    SubredditSearchPhrases,
+)
 from discovery.llm.stations.subreddit_selection import (
     dedupe_and_count,
     drop_below_median,
@@ -92,8 +97,10 @@ async def run_query_expansion(spec: JobSpec) -> JobPlan:
     candidates = await _discover_subreddits(phrases)
     raw_plan = await _select_and_design(spec, candidates)
 
+    hn_queries = list(raw_plan.hn_queries)  # capture once
     grounded = _ground_selection(raw_plan, candidates)
     final_plan = _finalize(grounded, spec)
+    final_plan = _attach_hn_queries(final_plan, hn_queries)  # restore once
     put_cached(_cache, key, final_plan)
     return final_plan
 
@@ -237,4 +244,30 @@ def _drop_invalid_queries(plan: JobPlan) -> JobPlan:
     return JobPlan.model_construct(
         reddit_queries=kept,
         reddit_subreddits=plan.reddit_subreddits,
+    )
+
+
+def _attach_hn_queries(plan: JobPlan, hn_queries: list[HackerNewsKeywordSpec]) -> JobPlan:
+    """Single point that re-attaches `hn_queries` to a post-tail plan.
+
+    The locked Reddit tail (`_ground_selection`, `_force_time_window`,
+    `_merge_baseline_subreddits`, `_drop_invalid_queries`) uses
+    `JobPlan.model_construct(reddit_queries=..., reddit_subreddits=...)`
+    at four sites and silently drops any non-Reddit fields. This helper
+    is the carry-through: capture `hn_queries` once at the top of
+    `run_query_expansion` (right after `_select_and_design`), let the
+    locked tail run untouched, then call this helper exactly once to
+    restore them before caching.
+
+    Uses `model_construct` (skips validation) so the post-pruning
+    Reddit fields -- which may be below the 25-30 band after
+    `_drop_invalid_queries` -- still survive. The "too few survived"
+    case is already enforced inside `_finalize`.
+
+    See `docs/specs/2026-05-20-hackernews-source-design.md` §6.
+    """
+    return JobPlan.model_construct(
+        reddit_queries=plan.reddit_queries,
+        reddit_subreddits=plan.reddit_subreddits,
+        hn_queries=hn_queries,
     )

@@ -21,11 +21,17 @@ from discovery.jobs import JobSpec
 from discovery.llm.cache import cache_key, make_cache, put_cached
 from discovery.llm.prompts import query_expansion as qe
 from discovery.llm.prompts import subreddit_phrases as sp
-from discovery.llm.schemas import JobPlan, RedditQuerySpec, SubredditSearchPhrases
+from discovery.llm.schemas import (
+    HackerNewsKeywordSpec,
+    JobPlan,
+    RedditQuerySpec,
+    SubredditSearchPhrases,
+)
 from discovery.llm.stations import query_expansion as station
 from discovery.llm.stations.query_expansion import (
     MODEL,
     QueryExpansionError,
+    _attach_hn_queries,
     run_query_expansion,
 )
 from discovery.sources.reddit_subreddits import PhraseResult, SubredditCandidate
@@ -297,3 +303,115 @@ class TestBaselineSubredditMerge:
         assert result.reddit_subreddits.count("smallbusiness") == 1
         assert "startups" in result.reddit_subreddits
         assert "microsaas" in result.reddit_subreddits
+
+
+def _hn_kw(keyword: str = "CRM CLI", intent: str = "launch") -> HackerNewsKeywordSpec:
+    return HackerNewsKeywordSpec(
+        keyword=keyword,
+        intent=intent,  # type: ignore[arg-type]
+        rationale="test rationale",
+    )
+
+
+class TestAttachHnQueries:
+    """The locked tail's `model_construct` rebuilds drop `hn_queries`.
+    `_attach_hn_queries` is the single point that restores them. The
+    helper itself must be a pure restore -- no validation, no mutation
+    of the plan's Reddit fields.
+    """
+
+    def test_attaches_hn_to_a_post_tail_plan(self) -> None:
+        post_tail = JobPlan.model_construct(
+            reddit_queries=[_query("q1")],
+            reddit_subreddits=["startups"],
+        )
+        assert post_tail.hn_queries == []
+
+        hn = [_hn_kw("CRM CLI"), _hn_kw("CRM founder", intent="context")]
+        final = _attach_hn_queries(post_tail, hn)
+
+        assert final.hn_queries == hn
+
+    def test_preserves_reddit_fields_unchanged(self) -> None:
+        post_tail = JobPlan.model_construct(
+            reddit_queries=[_query("q1"), _query("q2")],
+            reddit_subreddits=["a", "b", "c"],
+        )
+        final = _attach_hn_queries(post_tail, [_hn_kw()])
+
+        assert final.reddit_queries == post_tail.reddit_queries
+        assert final.reddit_subreddits == ["a", "b", "c"]
+
+    def test_uses_model_construct_skipping_band_validation(self) -> None:
+        """Like the rest of the tail, the helper uses `model_construct`
+        so a post-pruning plan with FEWER than 25 reddit_queries
+        (`_drop_invalid_queries` can prune below band) still survives
+        -- the 'too few survived' case is caught upstream in `_finalize`."""
+        below_band = JobPlan.model_construct(
+            reddit_queries=[_query("q1")],
+            reddit_subreddits=[],
+        )
+        final = _attach_hn_queries(below_band, [_hn_kw()])
+
+        assert len(final.reddit_queries) == 1
+        assert len(final.hn_queries) == 1
+
+    def test_empty_hn_list_yields_empty_hn_queries(self) -> None:
+        post_tail = JobPlan.model_construct(
+            reddit_queries=[_query("q1")],
+            reddit_subreddits=[],
+        )
+        final = _attach_hn_queries(post_tail, [])
+        assert final.hn_queries == []
+
+
+class TestRunQueryExpansionCarriesHnQueries:
+    """Integration: with the carry-through in place, hn_queries emitted
+    by the LLM survive the locked Reddit tail and appear in the final
+    cached JobPlan that `plan_job` writes to `Job.job_plan`.
+
+    Uses the existing `tmp_cache` fixture (patches `station._cache` AND
+    closes it on teardown -- critical, since `filterwarnings = ["error"]`
+    would turn an unclosed diskcache into a test failure) and the
+    existing `spec` fixture.
+    """
+
+    async def test_run_preserves_hn_queries_from_llm_output_to_final_plan(
+        self,
+        tmp_cache: Cache,
+        spec: JobSpec,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        hn = [
+            _hn_kw("CRM CLI", intent="launch"),
+            _hn_kw("CRM founder", intent="context"),
+        ]
+        emitted = JobPlan(
+            reddit_queries=[_query(f"q{i}") for i in range(28)],
+            reddit_subreddits=["startups"],
+            hn_queries=hn,
+        )
+
+        monkeypatch.setattr(station, "call_openai", _make_call_openai(emitted))
+        monkeypatch.setattr(station, "search_subreddits", _make_search("startups"))
+
+        final = await run_query_expansion(spec)
+
+        assert final.hn_queries == hn
+
+    async def test_run_with_empty_hn_queries_still_runs_clean(
+        self,
+        tmp_cache: Cache,
+        spec: JobSpec,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When the LLM emits `hn_queries=[]` (graceful sparsity), the
+        carry-through is a no-op restore -- final plan has empty list."""
+        emitted = _plan(n=28)
+
+        monkeypatch.setattr(station, "call_openai", _make_call_openai(emitted))
+        monkeypatch.setattr(station, "search_subreddits", _make_search("startups"))
+
+        final = await run_query_expansion(spec)
+
+        assert final.hn_queries == []
