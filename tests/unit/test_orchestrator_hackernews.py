@@ -1,18 +1,38 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
+from typing import Any
 
 import pytest
+from sqlmodel import SQLModel
+from sqlmodel.ext.asyncio.session import AsyncSession
 
+from discovery.db import models  # noqa: F401 -- registers tables on metadata
+from discovery.db.engine import async_session_factory, create_engine_for
+from discovery.db.models import Job, Task  # noqa: F401 -- registers tasks table on metadata
 from discovery.jobs import JobSpec
-from discovery.llm.schemas import HackerNewsKeywordSpec
+from discovery.llm.schemas import HackerNewsKeywordSpec, JobPlan, RedditQuerySpec
 from discovery.orchestrator.hackernews import (
     MAX_HN_QUERIES,
     _compile_hn_queries,
+    _queries_from_job_plan,
     _routing_for,
     _time_window_epoch,
+    enqueue_hn_task_for_job,
     hn_keyword_candidates_for_spec,
 )
+
+
+@pytest.fixture
+async def session() -> AsyncIterator[AsyncSession]:
+    engine = create_engine_for("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+    maker = async_session_factory(engine)
+    async with maker() as sess:
+        yield sess
+    await engine.dispose()
 
 
 def _epoch(year: int, month: int, day: int, hour: int = 0) -> int:
@@ -200,3 +220,150 @@ class TestHnKeywordCandidatesForSpec:
         exercised separately in TestCompileHnQueries.)"""
         spec = _spec(industry="cleaning")
         assert hn_keyword_candidates_for_spec(spec) == hn_keyword_candidates_for_spec(spec)
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by TestQueriesFromJobPlan and TestEnqueueHnTaskForJob
+# ---------------------------------------------------------------------------
+
+
+def _make_reddit_queries(n: int = 25) -> list[RedditQuerySpec]:
+    """25 valid RedditQuerySpec to satisfy JobPlan's 25-30 band."""
+    return [
+        RedditQuerySpec(
+            endpoint="site_wide",
+            q=f'(subreddit:startups) AND "test{i}"',
+            sort="top",
+            t="month",
+            limit=100,
+            rationale="test",
+        )
+        for i in range(n)
+    ]
+
+
+def _make_job(
+    *,
+    industry: str = "cleaning",
+    time_window: str = "month",
+    job_plan: dict[str, Any] | None = None,
+) -> Job:
+    spec = JobSpec(
+        industry=industry,
+        as_of=date(2026, 5, 20),
+        time_window=time_window,  # type: ignore[arg-type]
+    )
+    return Job(
+        spec=spec.model_dump(mode="json"),
+        spec_hash="testhash",
+        job_plan=job_plan,
+    )
+
+
+class TestQueriesFromJobPlan:
+    def test_returns_none_when_job_plan_is_null(self) -> None:
+        job = _make_job(job_plan=None)
+        assert _queries_from_job_plan(job) is None
+
+    def test_returns_empty_list_when_hn_queries_is_empty(self) -> None:
+        """Permissive default: LLM intentionally emitted [] (graceful
+        sparsity per §8 / §17). Return [] -- caller does NOT fall back
+        to template, because the LLM deliberately said nothing."""
+        plan = JobPlan(reddit_queries=_make_reddit_queries(), hn_queries=[])
+        job = _make_job(job_plan=plan.model_dump())
+        assert _queries_from_job_plan(job) == []
+
+    def test_compiles_when_hn_queries_present(self) -> None:
+        plan = JobPlan(
+            reddit_queries=_make_reddit_queries(),
+            hn_queries=[
+                HackerNewsKeywordSpec(
+                    keyword="CRM CLI",
+                    intent="launch",
+                    rationale="r",
+                ),
+            ],
+        )
+        job = _make_job(job_plan=plan.model_dump())
+        out = _queries_from_job_plan(job)
+        assert out is not None
+        assert len(out) == 1
+        assert out[0]["tags"] == "show_hn"
+
+    def test_returns_none_on_validation_failure(self) -> None:
+        """If `job_plan` is set but its shape doesn't validate, fall back
+        to template (None signal) -- defensive against schema drift."""
+        job = _make_job(job_plan={"reddit_queries": "wrong shape"})
+        assert _queries_from_job_plan(job) is None
+
+
+class TestEnqueueHnTaskForJob:
+    async def test_creates_task_with_compiled_queries_when_plan_present(
+        self, session: AsyncSession
+    ) -> None:
+        plan = JobPlan(
+            reddit_queries=_make_reddit_queries(),
+            hn_queries=[
+                HackerNewsKeywordSpec(
+                    keyword="CRM CLI",
+                    intent="launch",
+                    rationale="r",
+                ),
+            ],
+        )
+        job = _make_job(job_plan=plan.model_dump())
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+
+        task = await enqueue_hn_task_for_job(session, job)
+
+        assert task.id is not None
+        assert task.job_id == job.id
+        assert task.source == "hackernews"
+        assert task.action == "fetch"
+        assert len(task.params["queries"]) == 1
+        assert task.params["queries"][0]["tags"] == "show_hn"
+
+    async def test_falls_back_to_template_when_job_plan_null(self, session: AsyncSession) -> None:
+        job = _make_job(job_plan=None)
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+
+        task = await enqueue_hn_task_for_job(session, job)
+
+        # Template emits 4 candidates; compile pipeline keeps all 4.
+        assert len(task.params["queries"]) == 4
+        endpoints = {q["endpoint"] for q in task.params["queries"]}
+        assert "search_by_date" in endpoints
+        assert "search" in endpoints
+
+    async def test_creates_task_even_when_hn_queries_intentionally_empty(
+        self, session: AsyncSession
+    ) -> None:
+        """Empty `hn_queries` (LLM said 'this industry has no HN signal')
+        creates a no-op task -- graceful sparsity. The task runs, fetches
+        zero records, completes `done`."""
+        plan = JobPlan(reddit_queries=_make_reddit_queries(), hn_queries=[])
+        job = _make_job(job_plan=plan.model_dump())
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+
+        task = await enqueue_hn_task_for_job(session, job)
+
+        assert task.params["queries"] == []
+
+    async def test_idempotent_on_content_hash(self, session: AsyncSession) -> None:
+        """Re-enqueuing the same job returns the existing task (UNIQUE on
+        (job_id, content_hash)). No duplicate Bronze fetches."""
+        job = _make_job(job_plan=None)
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+
+        task_a = await enqueue_hn_task_for_job(session, job)
+        task_b = await enqueue_hn_task_for_job(session, job)
+
+        assert task_a.id == task_b.id

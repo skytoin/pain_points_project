@@ -22,8 +22,14 @@ from collections.abc import Iterable
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
+from loguru import logger
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
+
+from discovery.db.models import Job, Task
+from discovery.hashing import hash_params
 from discovery.jobs import JobSpec
-from discovery.llm.schemas import HackerNewsKeywordSpec
+from discovery.llm.schemas import HackerNewsKeywordSpec, JobPlan
 from discovery.sources.keyword_tokens import decompose_keyword
 
 _TIME_WINDOW_SECONDS: dict[str, int] = {
@@ -159,3 +165,79 @@ def hn_keyword_candidates_for_spec(spec: JobSpec) -> list[dict[str, Any]]:
         ),
     ]
     return _compile_hn_queries(candidates, spec)
+
+
+def _queries_from_job_plan(job: Job) -> list[dict[str, Any]] | None:
+    """Extract compiled HN queries from a populated `job_plan`, or
+    return None to signal "use the template instead."
+
+    Returns:
+    - `None`  when `job.job_plan` is null OR fails JobPlan validation
+      (template fallback signal).
+    - `[]`    when `job_plan` is valid but `hn_queries` is empty (LLM
+      intentionally emitted nothing -- graceful sparsity; do NOT fall
+      back to template).
+    - `[...]` when `hn_queries` is non-empty (compile pipeline applied).
+    """
+    if job.job_plan is None:
+        return None
+    try:
+        plan = JobPlan.model_validate(job.job_plan)
+    except Exception as e:
+        logger.warning(
+            "job {} has a job_plan that fails validation ({}); falling back to HN template.",
+            job.id,
+            e,
+        )
+        return None
+    spec = JobSpec.model_validate(job.spec)
+    return _compile_hn_queries(plan.hn_queries, spec)
+
+
+async def enqueue_hn_task_for_job(session: AsyncSession, job: Job) -> Task:
+    """Queue one HN fetch task for `job`. Idempotent on `content_hash`.
+
+    Query source priority:
+
+    1. `job.job_plan["hn_queries"]` (Wave 0 LLM output), compiled.
+    2. `hn_keyword_candidates_for_spec(spec)` -- the deterministic
+       template -- when Wave 0 didn't run or its plan failed
+       validation.
+
+    An empty compiled list is intentional (graceful HN sparsity on
+    non-tech industries -- spec §17 risk 5) and DOES enqueue a task;
+    the task runs, fetches zero records, and completes `done`. Mirrors
+    `orchestrator.reddit.enqueue_reddit_task_for_job` for shape.
+    """
+    spec = JobSpec.model_validate(job.spec)
+    queries = _queries_from_job_plan(job)
+    if queries is None:
+        # Note: `is None`, not `or` -- an empty `hn_queries` from the LLM
+        # is a valid output (graceful HN sparsity per spec §17 risk 5);
+        # only a missing or invalid job_plan triggers the template fallback.
+        queries = hn_keyword_candidates_for_spec(spec)
+    params: dict[str, Any] = {"queries": queries}
+    content_hash = hash_params({"source": "hackernews", "action": "fetch", "params": params})
+
+    existing = await session.exec(
+        select(Task).where(
+            Task.job_id == job.id,
+            Task.content_hash == content_hash,
+        )
+    )
+    task = existing.first()
+    if task is not None:
+        return task
+
+    task = Task(
+        job_id=job.id,
+        wave=1,
+        source="hackernews",
+        action="fetch",
+        params=params,
+        content_hash=content_hash,
+    )
+    session.add(task)
+    await session.commit()
+    await session.refresh(task)
+    return task
