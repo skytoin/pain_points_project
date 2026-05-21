@@ -1,13 +1,12 @@
 # Session handoff — discovery pipeline
 
-**Last touched:** 2026-05-16
-**Branch:** `claude/jovial-poitras-fd083f`. The **subreddit-discovery
-slice** (grounded Wave 0: search *phrases* → `/subreddits/search` →
-deterministic rank → grounded selection) was merged to `main`
-(`ebe2bc2`). On top of that, this branch now carries the **wider
-query-band slice** (band 25–30 + industry-specific brainstorm, prompt
-v5) — not yet merged. See the two dated "what shipped" sections below,
-newest first.
+**Last touched:** 2026-05-21
+**Branch:** `claude/thirsty-lederberg-f91c6d`. The **subreddit-discovery
+slice** and **wider query-band slice** were merged to `main`. On top of
+that, this branch now carries the **HackerNews source adapter slice**
+(Wave 1 second source: Reddit + HN fan-out, prompt v6, `discovery work`
+drain loop) — not yet merged. See the dated "what shipped" sections
+below, newest first.
 
 Read this first when picking the project back up. It tells you what
 exists, what decisions are locked in, and exactly where the next slice
@@ -253,9 +252,9 @@ topics, not loose guidelines.
 - **Wave 2 (pain classification LLM station).** No
   `discovery.llm.schemas.PainExtraction`, no `run_pain_extraction()`.
   This is a candidate for the next slice.
-- **The other eleven sources.** Only Reddit. YouTube, HN, Apollo,
-  Google Places, Yelp, OpenCorporates, trade directories, NewsAPI,
-  Listen Notes, Product Hunt, Census — all unbuilt.
+- **The other ten sources.** Reddit and HackerNews are built. YouTube,
+  Apollo, Google Places, Yelp, OpenCorporates, trade directories,
+  NewsAPI, Listen Notes, Product Hunt, Census — all unbuilt.
 - **Waves 3 & 4 (per-company / per-tool enrichment).** Reviews, job
   postings, tech stack, etc. — none of those tables exist.
 - **Wave 5 (link, sanity-check, aggregate).** No cross-linking SQL,
@@ -269,21 +268,21 @@ topics, not loose guidelines.
 
 ## Next slice: open
 
-Wave 0 landed, then was upgraded to **grounded subreddit discovery**
-(2026-05-16 slice — see the dedicated section below). The next slice
-is the user's call. Candidates, in rough order of payoff:
+Both Reddit and HackerNews now feed Bronze. The next slice is the
+user's call. Candidates, in rough order of payoff:
 
-1. **Wave 2 — Pain Classification LLM station.** Promotes raw Reddit
-   posts (Bronze) into `pain_signals` rows (Silver). Anthropic
-   Sonnet, batched, follows the same `llm-station` contract Wave 0
-   established. Schema: `PainExtraction` model, station
-   `run_pain_extraction(batch)`. ~3-4 days of work.
+1. **Wave 2 — Pain Classification LLM station.** Both Reddit and HN
+   Bronze is now accumulating. Promotes raw records into `pain_signals`
+   rows (Silver). Anthropic Sonnet, batched, follows the same
+   `llm-station` contract Wave 0 established. Schema: `PainExtraction`
+   model, station `run_pain_extraction(batch)`. ~3-4 days of work.
+   Nothing classifies yet — this is the highest-leverage next step.
 
-2. **Second source adapter.** YouTube, HN, NewsAPI, or Product Hunt
-   are the easiest next picks because they have clean REST APIs and
-   match the `source-adapter` skill's shape. With Wave 0 emitting
-   richer `JobPlan` fields (`youtube_queries`, `news_keywords`), the
-   second source can already consume LLM-built queries.
+2. **Third source adapter.** YouTube, NewsAPI, or Product Hunt are
+   the easiest next picks because they have clean REST APIs and match
+   the `source-adapter` skill's shape. With Wave 0 emitting richer
+   `JobPlan` fields (`youtube_queries`, `news_keywords`), the next
+   source can already consume LLM-built queries.
 
 3. **VCR cassette for Reddit happy path.** Tests currently use
    `httpx.MockTransport`. A real recording would catch upstream
@@ -312,6 +311,92 @@ The promotion path is a ~20-line `wave_0_task` wrapper around
 orchestrator-agnostic; no station code changes needed.
 
 ---
+
+## HackerNews source adapter (2026-05-20) — what shipped & locked in
+
+Built from `docs/specs/2026-05-20-hackernews-source-design.md` (approved,
+3-pass spec-reviewed, owner-revised: 8 prompt + template edits + 1
+empirical Algolia tag check) via `docs/plans/2026-05-20-hackernews-source.md`
+(5-chunk plan, each chunk reviewed). 17 commits across 5 chunks. Every
+task: TDD red→green→commit; per-chunk plan-reviewer dispatch + fix loop;
+per-task implementer + spec-compliance + code-quality reviewer dispatches.
+
+**Problem solved:** Wave 1 only had Reddit. Bronze accumulated pain-
+shaped signals but missed HN's complementary capability/launch
+signals. The slice adds HN as a second source so every `discovery run`
+fans out to Reddit AND HackerNews concurrently.
+
+**New pieces (add to the map above):**
+
+- `src/discovery/sources/keyword_tokens.py` — pure
+  `decompose_keyword` (whitespace-split, drop stopwords, keep first
+  2 surviving tokens, preserve casing). Reusable later by GitHub /
+  arXiv (also token-AND APIs).
+- `src/discovery/sources/hackernews.py` — `HackerNewsSource` with
+  per-instance `AsyncLimiter(5, 1)` (NOT a singleton), no retry,
+  partial-success across queries, owned `httpx.AsyncClient` closed
+  via `aclose`. Pure helpers `build_search_url`, `keep_hit`,
+  `hit_to_raw_record` (verbatim Bronze, no normalization).
+- `src/discovery/orchestrator/hackernews.py` — `_time_window_epoch`,
+  `_routing_for` (launch→show_hn+search_by_date+relaxed, context→
+  story+search+points>5,num_comments>3), `_compile_hn_queries`
+  (decompose→dedupe→route→numericFilters→≤6 cap, preserves LLM
+  order), `hn_keyword_candidates_for_spec` (no-LLM template
+  fallback, capability-first), `enqueue_hn_task_for_job`
+  (idempotent on `content_hash`).
+- `src/discovery/llm/schemas.py` — `HackerNewsKeywordSpec`
+  (`keyword`, `intent: Literal["launch","context"]`, `rationale`,
+  all frozen). `JobPlan.hn_queries: list[HackerNewsKeywordSpec] =
+  Field(default_factory=list)` — permissive default (no `min_length`)
+  is deliberate, prevents HN under-production from raising
+  QueryExpansionError and sinking the Reddit grounded plan.
+- `src/discovery/llm/stations/query_expansion.py` — `_attach_hn_queries`
+  carry-through helper; 2-line wiring in `run_query_expansion`
+  (capture once after `_select_and_design`, restore once after
+  `_finalize`). The locked Reddit tail's 4 `model_construct` sites
+  stay byte-for-byte untouched.
+- `src/discovery/llm/prompts/query_expansion.py` — `VERSION` v5→v6;
+  new Kind 3 section (capability/launch framing, distinctive-token-
+  in-first-two-positions, tag-redundancy avoidance, graceful
+  sparsity for non-tech industries, 2:1 launch:context routing
+  signal). Combined Wave-0 cache invalidated automatically.
+- `src/discovery/workers/worker.py` — additive `claim_known_task`
+  (race-safe per-id claim via `UPDATE...WHERE id=? AND status=
+  'queued'`). `claim_one` UNTOUCHED.
+- `src/discovery/workers/__init__.py` — exports `claim_known_task`;
+  `build_default_registry` registers `"hackernews": HackerNewsSource()`.
+- `src/discovery/cli/run.py` — `_run_discovery` split into setup
+  (job + plan + enqueue both) / parallel dispatch (`asyncio.gather`
+  over two `_run_task_in_own_session` calls) / report phases.
+- `.claude/skills/hackernews-source/SKILL.md` — operational policy
+  (14 items + divergences) — the HN guide became this file.
+
+**Decisions locked in (don't re-litigate):**
+
+- **Approach A** — LLM brainstorms HN keyword candidates (raw
+  keyword + intent + rationale); Python owns ALL mechanics
+  (decomposition, 2:1 routing, numericFilters assembly, ≤6 cap).
+- **Carry-through across the locked tail, NOT through it.** Capture
+  `hn_queries` once in `run_query_expansion`, run the 4 locked tail
+  helpers Reddit-only, reattach once. Do NOT thread `hn_queries=`
+  through any of the four `model_construct` sites.
+- **No retry on HN.** Documented divergence from `source-adapter`
+  umbrella; the HN guide is emphatic. Partial success across queries
+  is preserved.
+- **Per-instance limiter, not a singleton.** Documented divergence
+  from `reddit-source`'s shared budget.
+- **Both sources every run.** No CLI flags. HN sparsity on non-tech
+  industries is graceful (empty `hn_queries` → no-op HN task → done).
+- **`JobPlan.hn_queries` permissive default** (no `min_length`).
+  HN under-production must not sink the Reddit grounded plan.
+- **Parallel fan-out routes around `claim_one`.** CLAUDE.md's
+  single-worker assumption stays. `claim_known_task` is the per-id
+  race-safe addition; `claim_one` is untouched.
+
+**Smoke verified (post-deploy):** [implementer: fill in if/when the
+real-LLM + real-Reddit + real-HN smoke runs are executed against this
+branch. For now this section is provisional; the unit-test suite is
+fully green at the time of this commit.]
 
 ## Wider query band + industry brainstorm (2026-05-16) — what shipped & locked in
 

@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from discovery.llm.schemas import JobPlan, RedditQuerySpec, SubredditSearchPhrases
+from discovery.llm.schemas import (
+    HackerNewsKeywordSpec,
+    JobPlan,
+    RedditQuerySpec,
+    SubredditSearchPhrases,
+)
 
 
 def _good_query(q: str = '"I would pay"') -> RedditQuerySpec:
@@ -142,3 +147,81 @@ class TestSubredditSearchPhrases:
     def test_rejects_more_than_eight(self) -> None:
         with pytest.raises(ValidationError):
             SubredditSearchPhrases(phrases=[str(i) for i in range(9)])
+
+
+def _make_reddit_queries(n: int = 25) -> list[RedditQuerySpec]:
+    """Build N valid RedditQuerySpec to satisfy JobPlan's 25-30 band."""
+    return [
+        RedditQuerySpec(
+            endpoint="site_wide",
+            q=f'(subreddit:startups) AND "test{i}"',
+            sort="top",
+            t="month",
+            limit=100,
+            rationale="test",
+        )
+        for i in range(n)
+    ]
+
+
+class TestJobPlanHnQueries:
+    def test_hn_queries_defaults_to_empty_list(self) -> None:
+        plan = JobPlan(reddit_queries=_make_reddit_queries())
+        assert plan.hn_queries == []
+
+    def test_hn_queries_accepts_list(self) -> None:
+        plan = JobPlan(
+            reddit_queries=_make_reddit_queries(),
+            hn_queries=[
+                HackerNewsKeywordSpec(keyword="CRM CLI", intent="launch", rationale="r"),
+            ],
+        )
+        assert len(plan.hn_queries) == 1
+        assert plan.hn_queries[0].keyword == "CRM CLI"
+
+    def test_hn_queries_round_trips_through_model_dump(self) -> None:
+        plan = JobPlan(
+            reddit_queries=_make_reddit_queries(),
+            hn_queries=[
+                HackerNewsKeywordSpec(keyword="x", intent="context", rationale="r"),
+            ],
+        )
+        restored = JobPlan.model_validate(plan.model_dump())
+        assert len(restored.hn_queries) == 1
+        assert restored.hn_queries[0].intent == "context"
+
+    def test_empty_hn_queries_does_not_break_validation(self) -> None:
+        """A JobPlan with empty hn_queries must validate cleanly — the
+        permissive default is what keeps HN sparsity from sinking the
+        Reddit plan."""
+        plan = JobPlan(reddit_queries=_make_reddit_queries(), hn_queries=[])
+        assert plan.hn_queries == []
+
+
+class TestHackerNewsKeywordSpec:
+    def test_minimal_valid(self) -> None:
+        spec = HackerNewsKeywordSpec(
+            keyword="local-first CRM",
+            intent="launch",
+            rationale="Show HN local-first CRM launches",
+        )
+        assert spec.keyword == "local-first CRM"
+        assert spec.intent == "launch"
+        assert spec.rationale == "Show HN local-first CRM launches"
+
+    def test_intent_must_be_launch_or_context(self) -> None:
+        with pytest.raises(ValidationError):
+            HackerNewsKeywordSpec(keyword="x", intent="other", rationale="r")  # type: ignore[arg-type]
+
+    def test_keyword_min_length(self) -> None:
+        with pytest.raises(ValidationError):
+            HackerNewsKeywordSpec(keyword="", intent="launch", rationale="r")
+
+    def test_rationale_min_length(self) -> None:
+        with pytest.raises(ValidationError):
+            HackerNewsKeywordSpec(keyword="x", intent="launch", rationale="")
+
+    def test_frozen_blocks_assignment(self) -> None:
+        spec = HackerNewsKeywordSpec(keyword="x", intent="launch", rationale="r")
+        with pytest.raises(ValidationError):
+            spec.keyword = "y"  # type: ignore[misc]

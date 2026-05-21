@@ -30,19 +30,27 @@ Versioning:
     an explicit "re-derive, never copy" guard. build_user_message's
     user-turn count string also moves to 25-30. All v4 grounding and
     Reddit-syntax rules retained.
+    v6 — adds a third output (`hn_queries`) alongside the existing
+    reddit fields. Introduces the "Kind 3 — Hacker News keyword
+    candidates" section teaching capability/launch framing,
+    distinctive-token-in-first-two-positions, tag-redundancy
+    avoidance, and graceful sparsity for non-tech industries.
+    Master "What to emit" now lists THREE fields. Wave 0 cache
+    invalidated automatically via the combined VERSION key.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 from discovery.jobs import JobSpec
+from discovery.llm.prompts.query_expansion_examples import (  # noqa: F401
+    FEW_SHOT_EXAMPLES,
+)
 from discovery.sources.reddit_subreddits import (
     SubredditCandidate,
     render_candidate_table,
 )
 
-VERSION: str = "v5"
+VERSION: str = "v6"
 
 
 SYSTEM_PROMPT: str = """\
@@ -165,6 +173,120 @@ Example industry-specific angles for "wedding photography":
 For any other industry these would be entirely different terms drawn
 from THAT industry's real workflow. Re-derive; never copy.
 
+# Kind 3 -- Hacker News keyword candidates (a SEPARATE output: hn_queries)
+
+Hacker News is a flat site -- NO communities, NO subreddit equivalent.
+Do not try to invent one. `hn_queries` is a separate, structurally
+different output from `reddit_queries` / `reddit_subreddits`.
+
+HN rewards CAPABILITY and LAUNCH framing, NOT pain framing. The
+phrases that work on Reddit return zero or near-zero on HN. Phrases
+that work on HN sound like:
+
+- Capability claims:               "X for Y", "open-source X",
+                                   "self-hosted X", "local-first X"
+- Tech-stack qualifier:            "X in Rust", "Rust X",
+                                   "WASM X", "Go X"
+
+## Construction rules for HN keyword candidates
+
+1. SHORT, DENSE PHRASES -- 2 to 4 words. Python will strip filler
+   stopwords and keep only the FIRST 2 surviving content tokens, so
+   think in PAIRS. Long phrases lose their tail tokens silently.
+
+2. ACRONYMS ARE FIRST-CLASS. MCP, LLM, RAG, CLI, API, SSR, WASM,
+   ETL, CRDT, gRPC, REST, OSS. HN's vocabulary is acronym-heavy and
+   Python preserves casing during decomposition. Use acronyms where
+   they're the natural HN term.
+
+3. AVOID FILLER AND STOPWORDS. They get stripped in Python anyway;
+   any phrase whose meaning DEPENDS on them ("the X of Y", "a way
+   to", "how to") is wasted budget.
+
+4. INDUSTRY-TERM + CAPABILITY/TECH-TERM COMBOS are the HN sweet
+   spot -- BUT put the distinctive word in the first two positions
+   so decomposition keeps it. Examples (every distinctive token
+   survives): "local-first CRM", "Rust vector-db", "TypeScript
+   agents", "scheduling CLI", "billing CRDT". Bury "CRM" or
+   "framework" or "database" at position 3 and Python silently
+   drops the very word that makes the phrase HN-suitable.
+
+5. NO Reddit-flavored pain phrasings. "I would pay", "frustrated
+   with", "wish there was", "tired of" -- these all return zero or
+   near-zero on HN. They live in `reddit_queries`, not `hn_queries`.
+
+6. DO NOT spend content tokens on tag-redundant words. Don't write
+   "Show HN", "HN", "Ask HN" inside the keyword -- `intent=launch`
+   already routes to `tags=show_hn` and `intent=context` to
+   `tags=story` server-side. Putting those words in the keyword
+   burns both content slots on the tag filter (the LLM's most
+   common HN failure mode). Spend both content tokens on the
+   substantive industry/capability terms.
+
+## Tag each candidate's INTENT -- launch or context
+
+For every HN candidate you emit, mark `intent`:
+
+- launch -- phrase shaped to match a fresh "Show HN" launch (product
+  name shape, "X for Y", new-thing framing). Python fires these
+  against the date-sorted endpoint with relaxed quality filters so
+  brand-new launches with low points still surface.
+- context -- phrase shaped to match technical-discussion stories
+  (debates, comparisons, deep-dives). Python fires these against
+  the relevance-sorted endpoint with a server-side karma + comments
+  floor.
+
+AIM FOR ROUGHLY TWO-THIRDS LAUNCH AND ONE-THIRD CONTEXT (e.g. 6
+launch + 3 context, or 8 launch + 4 context). The rationale tag
+drives the routing per candidate; the 2:1 ratio is a target, not a
+quota -- Python does NOT enforce the ratio, it routes each candidate
+strictly by its own `intent` tag.
+
+## What to emit for HN
+
+Emit 8-15 `HackerNewsKeywordSpec` objects in `hn_queries` -- BUT if
+the industry has weak HN coverage (trades, local services, non-
+technical verticals), emit FEWER or ZERO candidates rather than
+inventing tech-framed phrases. Quality over quota; downstream is
+fine with an empty list. Each candidate has:
+
+- `keyword`   -- the raw phrase, 2-4 words, casing preserved.
+- `intent`    -- `launch` or `context`.
+- `rationale` -- one short sentence: what HN content this should
+                 surface and why it's HN-suitable.
+
+EMIT YOUR STRONGEST CANDIDATES FIRST. Python caps the fired set at
+6 in your emitted order, so ordering is a ranking signal -- your
+best candidates must appear in the first ~6 positions.
+
+Python downstream will decompose each keyword (drop stopwords, keep
+<=2 content tokens, preserve casing), dedupe, route by `intent`,
+build server-side `numericFilters` from the job's time window
+(relaxed for launch queries), and cap the total at ~6 actually fired
+against the API. Emit MORE than 6 candidates so the post-decomposition
+survivors still cover both intents.
+
+## HN illustration -- ONE example industry only (do NOT reuse these)
+
+For the example industry "personal CRM for solo founders" (an HN-
+native vertical chosen because it shows the pattern cleanly). Note
+how every example puts the distinctive token in the FIRST TWO
+positions so decomposition keeps it:
+
+- "local-first CRM" (launch) -- local-first sub-trend launches.
+- "CRM CLI" (launch) -- terminal-first product launches.
+- "OSS CRM" (launch) -- open-source CRM launches.
+- "SQLite CRM" (launch) -- SQLite-backed launch pattern.
+- "CRM founder" (context) -- discussion of how founders organize
+  relationship work.
+- "contact privacy" (context) -- privacy-debate angle on contact
+  storage.
+
+For ANY OTHER industry you must RE-DERIVE different industry-specific
+HN-shaped angles. Do not bolt this CRM vocabulary onto another
+industry the way you must not reuse the wedding-photography
+illustration above.
+
 For each query, you choose:
 
 - Endpoint (`per_sub` or `site_wide`)
@@ -175,7 +297,7 @@ For each query, you choose:
 
 # What to emit
 
-You will emit a JSON object validated as `JobPlan` with two fields:
+You will emit a JSON object validated as `JobPlan` with THREE fields:
 
 - `reddit_queries` — between 25 and 30 `RedditQuerySpec` objects.
   Each has `endpoint`, `q`, `subreddit` (set for per_sub only),
@@ -185,6 +307,9 @@ You will emit a JSON object validated as `JobPlan` with two fields:
   (without the `r/` prefix). Up to ~12. These complement the queries
   themselves; Python code may use this list to seed per-sub queries
   or rank subs for follow-up.
+- `hn_queries` — 8-15 `HackerNewsKeywordSpec` objects (see "Kind 3 --
+  Hacker News keyword candidates" above). Re-derive HN-shaped angles
+  for THIS industry; do NOT translate the reddit_queries to HN.
 
 Each `rationale` is mandatory and visible to the engineer reviewing
 plans. Be concrete: "scopes to nurse community for willingness-to-pay
@@ -260,189 +385,6 @@ There is no minimum. The hard ceiling is 30 — if you return more than
 """
 
 
-def _example_queries(
-    qs: list[tuple[str, str | None, str, str]],
-) -> list[dict[str, Any]]:
-    """Helper to build a list of 10+ valid RedditQuerySpec-shaped dicts
-    from compact tuples `(endpoint, subreddit_or_None, q, rationale)`.
-    Sets `subreddit` only for per_sub queries; site_wide omits it."""
-    out: list[dict[str, Any]] = []
-    for endpoint, subreddit, q, rationale in qs:
-        entry: dict[str, Any] = {
-            "endpoint": endpoint,
-            "q": q,
-            "sort": "top",
-            "t": "month",
-            "limit": 100,
-            "rationale": rationale,
-        }
-        if subreddit is not None:
-            entry["subreddit"] = subreddit
-        out.append(entry)
-    return out
-
-
-FEW_SHOT_EXAMPLES: list[dict[str, Any]] = [
-    {
-        "input": {
-            "industry": "commercial cleaning",
-            "as_of": "2026-06-01",
-            "location": "NY",
-            "size": "medium",
-        },
-        "output": {
-            "reddit_queries": _example_queries(
-                [
-                    (
-                        "site_wide",
-                        None,
-                        '(subreddit:smallbusiness OR subreddit:Entrepreneur OR subreddit:startups) AND "commercial cleaning" AND ("I would pay" OR "I\'d pay" OR "would pay for")',
-                        "Cross-sub willingness-to-pay scan anchored on the industry literal; baseline business subs.",
-                    ),
-                    (
-                        "per_sub",
-                        "CleaningTips",
-                        '"commercial cleaning" AND ("frustrated with" OR "fed up with" OR "tired of")',
-                        "Scoped to r/CleaningTips for frustration signals from actual practitioners.",
-                    ),
-                    (
-                        "site_wide",
-                        None,
-                        '(subreddit:Janitorial OR subreddit:OfficeCleaners) AND ("wish there was" OR "wish someone would")',
-                        "Unmet-need scan inside janitorial-focused subs.",
-                    ),
-                    (
-                        "site_wide",
-                        None,
-                        '(subreddit:smallbusiness OR subreddit:Entrepreneur) AND "cleaning business" AND ("alternative to" OR "replacement for")',
-                        "Picks up posts looking to swap out their current cleaning vendor or tool.",
-                    ),
-                    (
-                        "site_wide",
-                        None,
-                        '(subreddit:startups OR subreddit:microsaas) AND "cleaning" AND ("built a tool" OR "made a tool")',
-                        "Builder signals — devs who've built something cleaning-adjacent worth studying.",
-                    ),
-                    (
-                        "per_sub",
-                        "Janitorial",
-                        '"commercial cleaning" AND ("switched from" OR "moving away from")',
-                        "Scoped to r/Janitorial for switching signals between vendors/products.",
-                    ),
-                    (
-                        "site_wide",
-                        None,
-                        '(subreddit:smallbusiness OR subreddit:Entrepreneur) AND ("why is there no" OR "why does no one") AND "cleaning"',
-                        "Market-gap questions — explicit articulations of what doesn't exist yet.",
-                    ),
-                    (
-                        "site_wide",
-                        None,
-                        '(subreddit:OfficeCleaners OR subreddit:CleaningTips) AND ("shut down" OR "killed off")',
-                        "Dead-competitor signals — recent failures point to attempts and missed needs.",
-                    ),
-                    (
-                        "per_sub",
-                        "smallbusiness",
-                        '("scheduling" OR "billing" OR "payroll") AND ("frustrated with" OR "tired of")',
-                        "Inside r/smallbusiness — operational pain points cleaners actually run into.",
-                    ),
-                    (
-                        "site_wide",
-                        None,
-                        '(subreddit:Entrepreneur OR subreddit:smallbusiness OR subreddit:startups) AND "janitorial" AND ("I would pay" OR "would pay for")',
-                        "Second willingness-to-pay scan using the synonym 'janitorial' to catch posts using different terminology.",
-                    ),
-                ]
-            ),
-            "reddit_subreddits": [
-                "CleaningTips",
-                "Janitorial",
-                "smallbusiness",
-                "Entrepreneur",
-                "OfficeCleaners",
-            ],
-        },
-    },
-    {
-        "input": {"industry": "indie game development", "as_of": "2026-06-01"},
-        "output": {
-            "reddit_queries": _example_queries(
-                [
-                    (
-                        "site_wide",
-                        None,
-                        '(subreddit:gamedev OR subreddit:IndieDev OR subreddit:Unity3D) AND ("wish there was" OR "wish someone would")',
-                        "Unmet-need scan across the three biggest indie gamedev subs.",
-                    ),
-                    (
-                        "per_sub",
-                        "gamedev",
-                        '("I would pay" OR "I\'d pay" OR "would pay for")',
-                        "Inside r/gamedev — willingness-to-pay signals for tools.",
-                    ),
-                    (
-                        "site_wide",
-                        None,
-                        '(subreddit:gamedev OR subreddit:Godot) AND ("frustrated with" OR "fed up with")',
-                        "Frustration in gamedev + Godot specifically — engine-side pain points.",
-                    ),
-                    (
-                        "site_wide",
-                        None,
-                        '(subreddit:IndieDev OR subreddit:gamedesign) AND ("alternative to" OR "replacement for")',
-                        "Tooling alternatives inside design-focused subs.",
-                    ),
-                    (
-                        "site_wide",
-                        None,
-                        '(subreddit:gamedev OR subreddit:Unity3D OR subreddit:Unreal) AND ("built a tool" OR "made a tool")',
-                        "Builder signals across the three major engine subs.",
-                    ),
-                    (
-                        "per_sub",
-                        "gamedev",
-                        '("switched from" OR "moving away from") AND ("Unity" OR "Unreal" OR "Godot")',
-                        "Engine-switching narratives inside r/gamedev.",
-                    ),
-                    (
-                        "site_wide",
-                        None,
-                        '(subreddit:gamedev OR subreddit:IndieDev) AND ("why is there no" OR "why does no one")',
-                        "Market-gap questions in indie gamedev.",
-                    ),
-                    (
-                        "site_wide",
-                        None,
-                        '(subreddit:gamedev OR subreddit:Godot OR subreddit:Unity3D) AND ("shut down" OR "killed off")',
-                        "Dead-tool / dead-engine-feature signals.",
-                    ),
-                    (
-                        "site_wide",
-                        None,
-                        '(subreddit:IndieDev OR subreddit:gamedev) AND ("marketing" OR "wishlist") AND ("frustrated with" OR "tired of")',
-                        "Marketing-specific pain — the #1 indie complaint after engine pain.",
-                    ),
-                    (
-                        "per_sub",
-                        "gamedev",
-                        '("playtest" OR "QA") AND ("wish there was" OR "wish someone would")',
-                        "Inside r/gamedev — pre-release feedback pain.",
-                    ),
-                ]
-            ),
-            "reddit_subreddits": [
-                "gamedev",
-                "IndieDev",
-                "Unity3D",
-                "Godot",
-                "gamedesign",
-            ],
-        },
-    },
-]
-
-
 def build_user_message(spec: JobSpec, table: list[SubredditCandidate]) -> str:
     """Render the JobSpec plus the grounded subreddit table into the
     Call #2 user message.
@@ -473,5 +415,11 @@ def build_user_message(spec: JobSpec, table: list[SubredditCandidate]) -> str:
         "substantial share INDUSTRY-SPECIFIC (re-derived for THIS "
         "industry, not the prompt's wedding-photography illustration). "
         "Follow the system-prompt rules; explain each query's rationale."
+    )
+    lines.append("")
+    lines.append(
+        "Plus 8-15 hn_queries: HackerNews keyword candidates re-derived "
+        "for THIS industry (capability/launch framing, NOT pain phrasing). "
+        "Tag intent per candidate; aim ~2/3 launch / 1/3 context."
     )
     return "\n".join(lines)

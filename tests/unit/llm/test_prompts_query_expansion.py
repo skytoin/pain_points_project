@@ -1,8 +1,8 @@
-"""Shape tests for the Wave 0 Call #2 prompt (query_expansion v5).
+"""Shape tests for the Wave 0 Call #2 prompt (query_expansion v6).
 
-Pins module shape, not wording. v5 widens the band to 25-30 and adds
-the two-kinds + industry-specific-brainstorm instruction with a fenced
-one-industry illustration. The grounding section (v4) is retained.
+Pins module shape, not wording. v6 adds the Kind 3 HN keyword candidates
+section, updates the master "What to emit" to list THREE fields, and
+extends build_user_message with an HN nudge. All v5 content retained.
 """
 
 from __future__ import annotations
@@ -11,6 +11,11 @@ from datetime import date
 
 from discovery.jobs import JobSpec
 from discovery.llm.prompts import query_expansion as qe
+from discovery.llm.prompts.query_expansion import (
+    SYSTEM_PROMPT,
+    VERSION,
+    build_user_message,
+)
 from discovery.sources.reddit_subreddits import SubredditCandidate
 
 
@@ -28,8 +33,8 @@ def _table() -> list[SubredditCandidate]:
 
 
 class TestPromptModule:
-    def test_version_is_v5(self) -> None:
-        assert qe.VERSION == "v5"
+    def test_version_is_v6(self) -> None:
+        assert qe.VERSION == "v6"
 
     def test_system_prompt_keeps_core_reddit_rules(self) -> None:
         sp = qe.SYSTEM_PROMPT
@@ -96,3 +101,60 @@ class TestBuildUserMessage:
             _table(),
         )
         assert "year" in msg.lower()
+
+
+class TestPromptV6Additions:
+    """v6 = v5 plus the Kind 3 HN keyword candidate section and an
+    updated master 'What to emit' that lists THREE fields. Spec §8.
+    """
+
+    def test_version_is_v6(self) -> None:
+        assert VERSION == "v6"
+
+    def test_kind_3_section_present(self) -> None:
+        assert "Kind 3" in SYSTEM_PROMPT
+        assert "Hacker News" in SYSTEM_PROMPT
+
+    def test_hn_capability_framing_taught(self) -> None:
+        assert "CAPABILITY and LAUNCH framing" in SYSTEM_PROMPT
+
+    def test_tag_redundancy_rule_present(self) -> None:
+        assert (
+            "tag-redundant" in SYSTEM_PROMPT.lower()
+            or 'Don\'t write\n   "Show HN"' in SYSTEM_PROMPT
+        )
+
+    def test_first_two_positions_rule_present(self) -> None:
+        assert "first two positions" in SYSTEM_PROMPT
+
+    def test_quality_over_quota_sparsity_clause_present(self) -> None:
+        assert "Quality over quota" in SYSTEM_PROMPT
+
+    def test_strongest_first_ranking_signal_present(self) -> None:
+        assert "STRONGEST CANDIDATES FIRST" in SYSTEM_PROMPT
+
+    def test_python_does_not_enforce_ratio_clarifier_present(self) -> None:
+        assert "Python does NOT enforce the ratio" in SYSTEM_PROMPT
+
+    def test_master_what_to_emit_lists_three_fields(self) -> None:
+        assert "JobPlan` with THREE fields" in SYSTEM_PROMPT
+        assert "reddit_queries" in SYSTEM_PROMPT
+        assert "reddit_subreddits" in SYSTEM_PROMPT
+        assert "hn_queries" in SYSTEM_PROMPT
+
+    def test_build_user_message_includes_hn_nudge(self) -> None:
+        spec = JobSpec(industry="x", as_of=date(2026, 5, 20), time_window="month")
+        table = [
+            SubredditCandidate(
+                name="startups",
+                subscribers=5000,
+                active_user_count=120,
+                subreddit_type="public",
+                public_description="x",
+            )
+        ]
+        msg = build_user_message(spec, table)
+
+        assert "hn_queries" in msg
+        assert "HackerNews keyword candidates" in msg
+        assert "capability/launch framing" in msg

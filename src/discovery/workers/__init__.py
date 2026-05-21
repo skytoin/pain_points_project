@@ -15,6 +15,7 @@ from discovery.sources.base import BaseSource
 from discovery.workers.worker import (
     SourceRegistry,
     aclose_registry,
+    claim_known_task,
     claim_one,
     run_one,
     run_worker_drain,
@@ -30,10 +31,12 @@ def build_default_registry() -> SourceRegistry:
     per worker process and reused for every task that targets it.
     """
     from discovery.config.settings import settings  # noqa: PLC0415 — lazy on purpose
+    from discovery.sources.hackernews import HackerNewsSource  # noqa: PLC0415
     from discovery.sources.reddit import RedditSource  # noqa: PLC0415
 
     adapters: dict[str, BaseSource] = {
         "reddit": RedditSource(user_agent=settings.reddit_user_agent),
+        "hackernews": HackerNewsSource(),  # no auth, no UA
     }
     return adapters
 
@@ -42,6 +45,7 @@ __all__ = [
     "SourceRegistry",
     "aclose_registry",
     "build_default_registry",
+    "claim_known_task",
     "claim_one",
     "run_one",
     "run_worker_drain",

@@ -17,8 +17,11 @@ Don't reach into `plan.model_extra["youtube_queries"]` from app code;
 that's a bug-magnet because the field isn't validated. Add the field,
 then use it.
 
-The fields below are the only ones Wave 0 needs today: Reddit-shaped
-because Reddit is the only source built so far.
+The fields below are what Wave 0 needs today: Reddit fields
+(`reddit_queries`, `reddit_subreddits`) and HN field (`hn_queries`).
+Each is consumed by its respective orchestrator under
+`discovery.orchestrator.`. Adding a new source means: add a typed
+field here AND wire its orchestrator there.
 """
 
 from __future__ import annotations
@@ -80,6 +83,38 @@ class RedditQuerySpec(BaseModel):
         return self
 
 
+class HackerNewsKeywordSpec(BaseModel):
+    """Wave 0 LLM HN keyword candidate. Python downstream decomposes,
+    routes by intent, and compiles to an Algolia URL. Schema lives in
+    spec §7; deterministic routing table is in §10. See
+    `docs/specs/2026-05-20-hackernews-source-design.md`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    keyword: str = Field(
+        min_length=1,
+        max_length=80,
+        description=(
+            "Raw HN-suitable phrase, 2-4 words, casing preserved. "
+            "Python keeps the first 2 surviving content tokens after "
+            "stopword stripping; long phrases lose their tail tokens."
+        ),
+    )
+    intent: Literal["launch", "context"] = Field(
+        description=(
+            "launch -> fired against /search_by_date with tags=show_hn "
+            "and a relaxed quality floor (recency is the signal). "
+            "context -> fired against /search with tags=story and the "
+            "standard points/num_comments floor."
+        ),
+    )
+    rationale: str = Field(
+        min_length=1,
+        description="Why this HN candidate is worth running.",
+    )
+
+
 class JobPlan(BaseModel):
     """LLM-produced query plan for one Job. Wave 0's output.
 
@@ -91,6 +126,16 @@ class JobPlan(BaseModel):
 
     reddit_queries: list[RedditQuerySpec] = Field(min_length=25, max_length=30)
     reddit_subreddits: list[str] = Field(default_factory=list)
+    hn_queries: list[HackerNewsKeywordSpec] = Field(
+        default_factory=list,
+        description=(
+            "Wave 0 HN keyword candidates. Permissive default (no "
+            "min_length) is deliberate: a strict floor would let HN "
+            "under-production raise QueryExpansionError and sink the "
+            "Reddit grounded plan. HN sparsity must degrade gracefully "
+            "to the no-LLM template in orchestrator/hackernews.py."
+        ),
+    )
 
 
 class SubredditSearchPhrases(BaseModel):
