@@ -1,8 +1,13 @@
-"""`discovery run` — end-to-end: create job, enqueue Reddit, drain the queue.
+"""`discovery run` — end-to-end: create job, enqueue Reddit + HN, dispatch both.
 
-This is the Wave 1 happy path with a single source. The orchestration
-template is hand-rolled (see `discovery.orchestrator.reddit`); Wave 0
-will replace it with the LLM query-expansion station later.
+Three phases:
+
+1. **Setup** — create the job, run Wave 0 (LLM query expansion), enqueue
+   both source tasks in one session block. Capture the task ids.
+2. **Parallel dispatch** — open a fresh session per concurrent branch and
+   dispatch via `asyncio.gather`. `AsyncSession` is not safe to share across
+   concurrent ops; each branch owns its session exclusively.
+3. **Report** — open another fresh session for the read-only detail gather.
 
 Usage::
 
@@ -18,17 +23,26 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date
+from typing import Any
 
 import typer
+from loguru import logger
 from rich.console import Console
 
 from discovery.cli.inspect import render_job_detail
 from discovery.db.engine import async_session_factory, get_engine
 from discovery.jobs import JobSpec, create_job
+from discovery.orchestrator.hackernews import enqueue_hn_task_for_job
 from discovery.orchestrator.jobs import plan_job
 from discovery.orchestrator.reddit import enqueue_reddit_task_for_job
 from discovery.view import gather_job_detail
-from discovery.workers import aclose_registry, build_default_registry, run_worker_once
+from discovery.workers import (
+    SourceRegistry,
+    aclose_registry,
+    build_default_registry,
+    claim_known_task,
+    run_one,
+)
 
 console = Console()
 
@@ -53,49 +67,87 @@ async def _run_discovery(
     )
 
     try:
+        # Phase 1: create the job, run Wave 0 inline, enqueue BOTH
+        # source tasks in one session block. Capture ids for Phase 2.
         async with maker() as session:
             job = await create_job(session, spec)
             console.print(
                 f"[bold]job:[/bold] {job.id}  "
-                f"[dim](spec_hash {job.spec_hash[:12]}…, status {job.status.value})[/dim]"
+                f"[dim](spec_hash {job.spec_hash[:12]}…, "
+                f"status {job.status.value})[/dim]"
             )
 
-            # Wave 0: LLM query expansion via OpenAI gpt-5.4. On success
-            # this populates job.job_plan; on failure (no API key, LLM
-            # error, validation drops too many queries) the job_plan
-            # stays null and the Reddit orchestrator falls back to its
-            # deterministic template.
+            # Wave 0: LLM query expansion via OpenAI gpt-5.4. On
+            # success this populates job.job_plan with three fields
+            # (reddit_queries, reddit_subreddits, hn_queries); on
+            # failure (no API key, LLM error, validation drops too
+            # many queries) job.job_plan stays null and BOTH
+            # orchestrators fall back to their deterministic templates.
             job = await plan_job(session, job)
             plan_status = "planned" if job.job_plan is not None else "fallback"
             console.print(f"[bold]wave 0:[/bold] {plan_status}")
 
-            task = await enqueue_reddit_task_for_job(session, job)
+            reddit_task = await enqueue_reddit_task_for_job(session, job)
+            hn_task = await enqueue_hn_task_for_job(session, job)
             console.print(
-                f"[bold]queued task:[/bold] {task.id}  "
-                f"[dim](source={task.source}, "
-                f"queries={len(task.params['queries'])})[/dim]"
+                f"[bold]queued tasks:[/bold] "
+                f"reddit={reddit_task.id} "
+                f"(queries={len(reddit_task.params['queries'])}), "
+                f"hackernews={hn_task.id} "
+                f"(queries={len(hn_task.params['queries'])})"
             )
 
-            processed = 0
-            while True:
-                task_id = await run_worker_once(session, registry)
-                if task_id is None:
-                    break
-                processed += 1
-                console.print(f"  [green]✓[/green] processed task {task_id}")
+            job_id = job.id
+            reddit_task_id = reddit_task.id
+            hn_task_id = hn_task.id
 
-            console.print(f"[bold green]done.[/bold green] {processed} task(s) processed.")
+        # Phase 2: parallel dispatch by known task id. Each branch
+        # opens its own session -- AsyncSession is not safe to share
+        # across concurrent ops, and `claim_known_task` is race-safe
+        # per-id (it routes around the single-worker-safe `claim_one`).
+        # `run_one` already catches and finalizes adapter failures
+        # internally, so partial success across sources is automatic:
+        # if Reddit fails entirely and HN succeeds, the job still
+        # produces HN raw_records (and vice versa).
+        console.print("[bold]running reddit + hackernews concurrently...[/bold]")
+        assert reddit_task_id is not None
+        assert hn_task_id is not None
+        await asyncio.gather(
+            _run_task_in_own_session(maker, registry, reddit_task_id),
+            _run_task_in_own_session(maker, registry, hn_task_id),
+        )
+        console.print("[bold green]done.[/bold green] 2 task(s) processed.")
 
-            # Print the full report — plan + top posts — so the user
-            # doesn't need a second command to see what came back.
-            if job.id is not None:
-                detail = await gather_job_detail(session, job_id=job.id, post_limit=5)
+        # Phase 3: report. Fresh session for the read-only detail
+        # gather (the Phase-1 session was closed after enqueue).
+        if job_id is not None:
+            async with maker() as session:
+                detail = await gather_job_detail(session, job_id=job_id, post_limit=5)
                 if detail is not None:
                     console.print()
                     render_job_detail(detail)
     finally:
         await aclose_registry(registry)
         await engine.dispose()
+
+
+async def _run_task_in_own_session(
+    maker: Any,
+    registry: SourceRegistry,
+    task_id: int,
+) -> None:
+    """Open a fresh session, atomically claim the task by id, dispatch
+    it. One session per concurrent branch (AsyncSession is not
+    safe to share across concurrent ops). If the task is no longer
+    queued by the time we get to it (very unlikely under
+    single-worker, but defensive), log and return -- do not raise.
+    """
+    async with maker() as s:
+        task = await claim_known_task(s, task_id)
+        if task is None:
+            logger.warning("task {} not claimed (already running/done?)", task_id)
+            return
+        await run_one(s, registry, task)
 
 
 def run_command(
@@ -128,6 +180,6 @@ def run_command(
         ),
     ),
 ) -> None:
-    """Run a discovery slice: create the job, enqueue Reddit tasks, drain the queue."""
+    """Run a discovery slice: create the job, enqueue tasks, run Reddit + HN concurrently."""
     anchor = date.today() if as_of == "today" else date.fromisoformat(as_of)
     asyncio.run(_run_discovery(industry, location, size, anchor, time_window))
