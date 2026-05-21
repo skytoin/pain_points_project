@@ -252,8 +252,10 @@ class JobPlan(BaseModel):
 on `hn_queries` could let HN under-production raise
 `QueryExpansionError` and sink the Reddit grounded plan with it. The
 HN guide and the owner's fan-out decision say HN sparsity must
-*degrade gracefully*. If `hn_queries` arrives empty, the HN
-orchestrator falls back to its template (§10). Mirrors
+*degrade gracefully*. If `hn_queries` arrives empty, the LLM
+deliberately said nothing (non-tech industry, no good HN signal).
+The HN orchestrator enqueues a no-op task and returns — it does
+NOT fall back to the template (§10). Mirrors
 `reddit_subreddits`'s permissive default.
 
 ## 8. v6 prompt — adding HN keyword candidates to the existing Wave-0 prompt
@@ -472,8 +474,8 @@ Mirrors `orchestrator/reddit.py`. Public surface:
 - `enqueue_hn_task_for_job(session, job) -> Task` — idempotent on
   `content_hash`, mirrors `enqueue_reddit_task_for_job`.
 - `hn_keyword_candidates_for_spec(spec) -> list[dict]` — the no-LLM
-  template fallback. Used when `job.job_plan` is null OR contains a
-  thin/empty `hn_queries`.
+  template fallback. Used when `job.job_plan` is null or fails
+  `JobPlan` validation.
 
 Internal helpers (each one job, ≤60 lines per CLAUDE.md):
 
@@ -908,7 +910,9 @@ test modules:
 - Reads `job.job_plan["hn_queries"]` when present, calls
   `_compile_hn_queries`.
 - Template fallback fires when `job_plan` is null OR when
-  `hn_queries` is empty OR when decomposition wipes everything out.
+  decomposition wipes everything out (all tokens dropped as
+  stopwords). Empty `hn_queries` is graceful sparsity — enqueues
+  a no-op task; does NOT trigger template fallback.
 - `_compile_hn_queries` routes by `intent` (launch→show_hn+by_date,
   context→story+search).
 - `_compile_hn_queries` caps at `MAX_HN_QUERIES=6` preserving LLM
