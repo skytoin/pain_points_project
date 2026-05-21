@@ -174,9 +174,10 @@ def run_command(
         "--time-window",
         "-t",
         help=(
-            "Reddit search window: hour | day | week | month | year | all. "
-            "Default month. Use year for niche / B2B topics where a month "
-            "doesn't produce enough signal."
+            "Search time window: hour | day | week | month | year | all. "
+            "Default month. Applies to BOTH Reddit (`t` parameter) and HN "
+            "(`numericFilters` recency floor via JobSpec.time_window). Use year "
+            "for niche / B2B topics where a month doesn't produce enough signal."
         ),
     ),
 ) -> None:
