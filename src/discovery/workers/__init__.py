@@ -31,10 +31,12 @@ def build_default_registry() -> SourceRegistry:
     per worker process and reused for every task that targets it.
     """
     from discovery.config.settings import settings  # noqa: PLC0415 — lazy on purpose
+    from discovery.sources.hackernews import HackerNewsSource  # noqa: PLC0415
     from discovery.sources.reddit import RedditSource  # noqa: PLC0415
 
     adapters: dict[str, BaseSource] = {
         "reddit": RedditSource(user_agent=settings.reddit_user_agent),
+        "hackernews": HackerNewsSource(),  # no auth, no UA
     }
     return adapters
 
