@@ -123,3 +123,39 @@ def _compile_hn_queries(
             break
 
     return out
+
+
+def hn_keyword_candidates_for_spec(spec: JobSpec) -> list[dict[str, Any]]:
+    """Deterministic HN fallback -- no LLM. Capability word FIRST so
+    decomposition keeps it for multi-word industries (e.g.
+    `commercial cleaning CLI` would drop `CLI`; `CLI commercial
+    cleaning` keeps `CLI` + the first industry word). Same compile
+    path as the LLM output.
+
+    Used when `Job.job_plan` is null (Wave 0 failed or `OPENAI_API_KEY`
+    unset). Mirrors `orchestrator.reddit.reddit_queries_for_spec`.
+    """
+    industry = spec.industry
+    candidates = [
+        HackerNewsKeywordSpec(
+            keyword=f"CLI {industry}",
+            intent="launch",
+            rationale="(template) CLI launch fallback",
+        ),
+        HackerNewsKeywordSpec(
+            keyword=f"OSS {industry}",
+            intent="launch",
+            rationale="(template) OSS launch fallback",
+        ),
+        HackerNewsKeywordSpec(
+            keyword=f"API {industry}",
+            intent="launch",
+            rationale="(template) API launch fallback",
+        ),
+        HackerNewsKeywordSpec(
+            keyword=f"workflow {industry}",
+            intent="context",
+            rationale="(template) workflow discussion fallback",
+        ),
+    ]
+    return _compile_hn_queries(candidates, spec)

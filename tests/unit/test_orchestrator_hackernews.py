@@ -11,6 +11,7 @@ from discovery.orchestrator.hackernews import (
     _compile_hn_queries,
     _routing_for,
     _time_window_epoch,
+    hn_keyword_candidates_for_spec,
 )
 
 
@@ -158,3 +159,44 @@ class TestCompileHnQueries:
         # Convention: time filter first, quality filters after.
         filters = out[0]["numeric_filters"]
         assert filters.startswith("created_at_i>")
+
+
+class TestHnKeywordCandidatesForSpec:
+    def test_returns_at_least_one_compiled_query(self) -> None:
+        out = hn_keyword_candidates_for_spec(_spec(industry="cleaning"))
+        # Template has 4 candidates -- all should compile cleanly for a
+        # single-word industry.
+        assert len(out) >= 1
+
+    def test_capability_first_survives_decomposition_for_multiword_industry(self) -> None:
+        """For 'commercial cleaning', the template uses `CLI commercial
+        cleaning` etc. so the capability word lands in position 1 and
+        survives the 2-token cap."""
+        out = hn_keyword_candidates_for_spec(_spec(industry="commercial cleaning"))
+        queries = [q["query"] for q in out]
+        # Every query starts with a capability word (CLI/OSS/API/workflow)
+        # followed by the first industry word.
+        assert any(q.startswith("CLI ") for q in queries)
+        assert any(q.startswith("OSS ") for q in queries)
+        assert any(q.startswith("API ") for q in queries)
+        assert any(q.startswith("workflow ") for q in queries)
+
+    def test_includes_both_launch_and_context_queries(self) -> None:
+        out = hn_keyword_candidates_for_spec(_spec(industry="cleaning"))
+        endpoints = {q["endpoint"] for q in out}
+        # CLI/OSS/API are launch, workflow is context.
+        assert "search_by_date" in endpoints  # at least one launch
+        assert "search" in endpoints  # at least one context
+
+    def test_each_query_carries_the_time_window_filter(self) -> None:
+        out = hn_keyword_candidates_for_spec(_spec(industry="cleaning", time_window="year"))
+        for q in out:
+            # year window -> created_at_i floor present on every query.
+            assert "created_at_i>" in q["numeric_filters"]
+
+    def test_template_output_is_deterministic(self) -> None:
+        """Same spec, same compiled output -- the template + compile
+        pipeline are pure. (Dedup behavior for collision cases is
+        exercised separately in TestCompileHnQueries.)"""
+        spec = _spec(industry="cleaning")
+        assert hn_keyword_candidates_for_spec(spec) == hn_keyword_candidates_for_spec(spec)
