@@ -30,6 +30,13 @@ Versioning:
     an explicit "re-derive, never copy" guard. build_user_message's
     user-turn count string also moves to 25-30. All v4 grounding and
     Reddit-syntax rules retained.
+    v6 — adds a third output (`hn_queries`) alongside the existing
+    reddit fields. Introduces the "Kind 3 — Hacker News keyword
+    candidates" section teaching capability/launch framing,
+    distinctive-token-in-first-two-positions, tag-redundancy
+    avoidance, and graceful sparsity for non-tech industries.
+    Master "What to emit" now lists THREE fields. Wave 0 cache
+    invalidated automatically via the combined VERSION key.
 """
 
 from __future__ import annotations
@@ -42,7 +49,7 @@ from discovery.sources.reddit_subreddits import (
     render_candidate_table,
 )
 
-VERSION: str = "v5"
+VERSION: str = "v6"
 
 
 SYSTEM_PROMPT: str = """\
@@ -165,6 +172,120 @@ Example industry-specific angles for "wedding photography":
 For any other industry these would be entirely different terms drawn
 from THAT industry's real workflow. Re-derive; never copy.
 
+# Kind 3 -- Hacker News keyword candidates (a SEPARATE output: hn_queries)
+
+Hacker News is a flat site -- NO communities, NO subreddit equivalent.
+Do not try to invent one. `hn_queries` is a separate, structurally
+different output from `reddit_queries` / `reddit_subreddits`.
+
+HN rewards CAPABILITY and LAUNCH framing, NOT pain framing. The
+phrases that work on Reddit return zero or near-zero on HN. Phrases
+that work on HN sound like:
+
+- Capability claims:               "X for Y", "open-source X",
+                                   "self-hosted X", "local-first X"
+- Tech-stack qualifier:            "X in Rust", "Rust X",
+                                   "WASM X", "Go X"
+
+## Construction rules for HN keyword candidates
+
+1. SHORT, DENSE PHRASES -- 2 to 4 words. Python will strip filler
+   stopwords and keep only the FIRST 2 surviving content tokens, so
+   think in PAIRS. Long phrases lose their tail tokens silently.
+
+2. ACRONYMS ARE FIRST-CLASS. MCP, LLM, RAG, CLI, API, SSR, WASM,
+   ETL, CRDT, gRPC, REST, OSS. HN's vocabulary is acronym-heavy and
+   Python preserves casing during decomposition. Use acronyms where
+   they're the natural HN term.
+
+3. AVOID FILLER AND STOPWORDS. They get stripped in Python anyway;
+   any phrase whose meaning DEPENDS on them ("the X of Y", "a way
+   to", "how to") is wasted budget.
+
+4. INDUSTRY-TERM + CAPABILITY/TECH-TERM COMBOS are the HN sweet
+   spot -- BUT put the distinctive word in the first two positions
+   so decomposition keeps it. Examples (every distinctive token
+   survives): "local-first CRM", "Rust vector-db", "TypeScript
+   agents", "scheduling CLI", "billing CRDT". Bury "CRM" or
+   "framework" or "database" at position 3 and Python silently
+   drops the very word that makes the phrase HN-suitable.
+
+5. NO Reddit-flavored pain phrasings. "I would pay", "frustrated
+   with", "wish there was", "tired of" -- these all return zero or
+   near-zero on HN. They live in `reddit_queries`, not `hn_queries`.
+
+6. DO NOT spend content tokens on tag-redundant words. Don't write
+   "Show HN", "HN", "Ask HN" inside the keyword -- `intent=launch`
+   already routes to `tags=show_hn` and `intent=context` to
+   `tags=story` server-side. Putting those words in the keyword
+   burns both content slots on the tag filter (the LLM's most
+   common HN failure mode). Spend both content tokens on the
+   substantive industry/capability terms.
+
+## Tag each candidate's INTENT -- launch or context
+
+For every HN candidate you emit, mark `intent`:
+
+- launch -- phrase shaped to match a fresh "Show HN" launch (product
+  name shape, "X for Y", new-thing framing). Python fires these
+  against the date-sorted endpoint with relaxed quality filters so
+  brand-new launches with low points still surface.
+- context -- phrase shaped to match technical-discussion stories
+  (debates, comparisons, deep-dives). Python fires these against
+  the relevance-sorted endpoint with a server-side karma + comments
+  floor.
+
+AIM FOR ROUGHLY TWO-THIRDS LAUNCH AND ONE-THIRD CONTEXT (e.g. 6
+launch + 3 context, or 8 launch + 4 context). The rationale tag
+drives the routing per candidate; the 2:1 ratio is a target, not a
+quota -- Python does NOT enforce the ratio, it routes each candidate
+strictly by its own `intent` tag.
+
+## What to emit for HN
+
+Emit 8-15 `HackerNewsKeywordSpec` objects in `hn_queries` -- BUT if
+the industry has weak HN coverage (trades, local services, non-
+technical verticals), emit FEWER or ZERO candidates rather than
+inventing tech-framed phrases. Quality over quota; downstream is
+fine with an empty list. Each candidate has:
+
+- `keyword`   -- the raw phrase, 2-4 words, casing preserved.
+- `intent`    -- `launch` or `context`.
+- `rationale` -- one short sentence: what HN content this should
+                 surface and why it's HN-suitable.
+
+EMIT YOUR STRONGEST CANDIDATES FIRST. Python caps the fired set at
+6 in your emitted order, so ordering is a ranking signal -- your
+best candidates must appear in the first ~6 positions.
+
+Python downstream will decompose each keyword (drop stopwords, keep
+<=2 content tokens, preserve casing), dedupe, route by `intent`,
+build server-side `numericFilters` from the job's time window
+(relaxed for launch queries), and cap the total at ~6 actually fired
+against the API. Emit MORE than 6 candidates so the post-decomposition
+survivors still cover both intents.
+
+## HN illustration -- ONE example industry only (do NOT reuse these)
+
+For the example industry "personal CRM for solo founders" (an HN-
+native vertical chosen because it shows the pattern cleanly). Note
+how every example puts the distinctive token in the FIRST TWO
+positions so decomposition keeps it:
+
+- "local-first CRM" (launch) -- local-first sub-trend launches.
+- "CRM CLI" (launch) -- terminal-first product launches.
+- "OSS CRM" (launch) -- open-source CRM launches.
+- "SQLite CRM" (launch) -- SQLite-backed launch pattern.
+- "CRM founder" (context) -- discussion of how founders organize
+  relationship work.
+- "contact privacy" (context) -- privacy-debate angle on contact
+  storage.
+
+For ANY OTHER industry you must RE-DERIVE different industry-specific
+HN-shaped angles. Do not bolt this CRM vocabulary onto another
+industry the way you must not reuse the wedding-photography
+illustration above.
+
 For each query, you choose:
 
 - Endpoint (`per_sub` or `site_wide`)
@@ -175,7 +296,7 @@ For each query, you choose:
 
 # What to emit
 
-You will emit a JSON object validated as `JobPlan` with two fields:
+You will emit a JSON object validated as `JobPlan` with THREE fields:
 
 - `reddit_queries` — between 25 and 30 `RedditQuerySpec` objects.
   Each has `endpoint`, `q`, `subreddit` (set for per_sub only),
@@ -185,6 +306,9 @@ You will emit a JSON object validated as `JobPlan` with two fields:
   (without the `r/` prefix). Up to ~12. These complement the queries
   themselves; Python code may use this list to seed per-sub queries
   or rank subs for follow-up.
+- `hn_queries` — 8-15 `HackerNewsKeywordSpec` objects (see "Kind 3 --
+  Hacker News keyword candidates" above). Re-derive HN-shaped angles
+  for THIS industry; do NOT translate the reddit_queries to HN.
 
 Each `rationale` is mandatory and visible to the engineer reviewing
 plans. Be concrete: "scopes to nurse community for willingness-to-pay
@@ -473,5 +597,11 @@ def build_user_message(spec: JobSpec, table: list[SubredditCandidate]) -> str:
         "substantial share INDUSTRY-SPECIFIC (re-derived for THIS "
         "industry, not the prompt's wedding-photography illustration). "
         "Follow the system-prompt rules; explain each query's rationale."
+    )
+    lines.append("")
+    lines.append(
+        "Plus 8-15 hn_queries: HackerNews keyword candidates re-derived "
+        "for THIS industry (capability/launch framing, NOT pain phrasing). "
+        "Tag intent per candidate; aim ~2/3 launch / 1/3 context."
     )
     return "\n".join(lines)
