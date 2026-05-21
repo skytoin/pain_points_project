@@ -17,6 +17,8 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlencode
 
+from discovery.sources.base import RawRecord
+
 _ALGOLIA_BASE = "https://hn.algolia.com/api/v1"
 
 
@@ -49,3 +51,29 @@ def build_search_url(query: dict[str, Any]) -> str:
         "page": "0",
     }
     return f"{_ALGOLIA_BASE}/{endpoint}?{urlencode(params)}"
+
+
+def keep_hit(hit: dict[str, Any]) -> bool:
+    """Adapter-side floor -- near-noop. Server-side `numericFilters`
+    does the quality work (spec §11). Locally we only drop hits with
+    no `objectID` (impossible per Algolia's docs but cheap defense).
+    """
+    return hit.get("objectID") is not None
+
+
+def hit_to_raw_record(hit: dict[str, Any]) -> RawRecord:
+    """Convert an Algolia HN hit into a `RawRecord`.
+
+    - `external_id = str(hit["objectID"])` -- HN's permanent story id,
+      always present per Algolia's index.
+    - `body = hit` verbatim -- Wave 2 parses; spec §3 "Bronze stores
+      raw" is a locked decision.
+    - No snippet construction, no permalink fallback, no body trimming.
+      Those are Wave 2 concerns in this project, even though the HN
+      guide discusses them adapter-side.
+    """
+    return RawRecord(
+        source="hackernews",
+        external_id=str(hit["objectID"]),
+        body=hit,
+    )
