@@ -4,7 +4,14 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from discovery.orchestrator.hackernews import _routing_for, _time_window_epoch
+from discovery.jobs import JobSpec
+from discovery.llm.schemas import HackerNewsKeywordSpec
+from discovery.orchestrator.hackernews import (
+    MAX_HN_QUERIES,
+    _compile_hn_queries,
+    _routing_for,
+    _time_window_epoch,
+)
 
 
 def _epoch(year: int, month: int, day: int, hour: int = 0) -> int:
@@ -54,3 +61,100 @@ class TestRoutingFor:
         assert endpoint == "search"
         assert tags == "story"
         assert extra == ["points>5", "num_comments>3"]
+
+    def test_unknown_intent_raises_key_error(self) -> None:
+        with pytest.raises(KeyError):
+            _routing_for("unknown")
+
+
+def _kw(keyword: str, intent: str = "launch") -> HackerNewsKeywordSpec:
+    return HackerNewsKeywordSpec(
+        keyword=keyword,
+        intent=intent,  # type: ignore[arg-type]
+        rationale="test",
+    )
+
+
+def _spec(industry: str = "test industry", time_window: str = "month") -> JobSpec:
+    return JobSpec(
+        industry=industry,
+        as_of=date(2026, 5, 20),
+        time_window=time_window,  # type: ignore[arg-type]
+    )
+
+
+class TestCompileHnQueries:
+    def test_decomposes_each_keyword_to_two_tokens(self) -> None:
+        out = _compile_hn_queries([_kw("Personal CRM local-first")], _spec())
+        assert len(out) == 1
+        # "local-first" at position 3 is dropped by decompose_keyword.
+        assert out[0]["query"] == "Personal CRM"
+
+    def test_drops_empty_decomposition(self) -> None:
+        # All-stopwords keyword decomposes to [] -> dropped silently.
+        out = _compile_hn_queries([_kw("the a an")], _spec())
+        assert out == []
+
+    def test_dedupes_on_token_tuple(self) -> None:
+        # Same keyword twice -> compiled once.
+        out = _compile_hn_queries([_kw("MCP server"), _kw("MCP server")], _spec())
+        assert len(out) == 1
+
+    def test_dedup_is_case_sensitive(self) -> None:
+        # `MCP` and `mcp` are different on HN (acronym casing matters).
+        out = _compile_hn_queries([_kw("MCP server"), _kw("mcp server")], _spec())
+        assert len(out) == 2
+
+    def test_routes_launch_to_search_by_date_show_hn(self) -> None:
+        out = _compile_hn_queries([_kw("CRM CLI", intent="launch")], _spec())
+        assert out[0]["endpoint"] == "search_by_date"
+        assert out[0]["tags"] == "show_hn"
+
+    def test_routes_context_to_search_with_quality_floor(self) -> None:
+        out = _compile_hn_queries([_kw("CRM founder", intent="context")], _spec())
+        assert out[0]["endpoint"] == "search"
+        assert out[0]["tags"] == "story"
+        assert "points>5" in out[0]["numeric_filters"]
+        assert "num_comments>3" in out[0]["numeric_filters"]
+
+    def test_includes_created_at_i_when_time_window_is_not_all(self) -> None:
+        out = _compile_hn_queries([_kw("CRM CLI")], _spec(time_window="month"))
+        assert "created_at_i>" in out[0]["numeric_filters"]
+
+    def test_omits_all_filters_for_launch_plus_all_time_window(self) -> None:
+        """Launch intent + time_window='all' -> no quality floor and no
+        recency floor -> numeric_filters is the empty string."""
+        out = _compile_hn_queries([_kw("CRM CLI", intent="launch")], _spec(time_window="all"))
+        assert out[0]["numeric_filters"] == ""
+
+    def test_context_with_all_time_keeps_quality_floor(self) -> None:
+        out = _compile_hn_queries([_kw("CRM founder", intent="context")], _spec(time_window="all"))
+        # No created_at_i but points/num_comments still apply.
+        assert "created_at_i" not in out[0]["numeric_filters"]
+        assert "points>5" in out[0]["numeric_filters"]
+        assert "num_comments>3" in out[0]["numeric_filters"]
+
+    def test_caps_at_max_hn_queries_preserving_llm_order(self) -> None:
+        kws = [_kw(f"kw{i} tok") for i in range(15)]
+        out = _compile_hn_queries(kws, _spec())
+        assert len(out) == MAX_HN_QUERIES == 6
+        # Order preserved -- LLM ranking signal (spec §8).
+        assert out[0]["query"] == "kw0 tok"
+        assert out[5]["query"] == "kw5 tok"
+
+    def test_hits_per_page_is_30(self) -> None:
+        out = _compile_hn_queries([_kw("CRM CLI")], _spec())
+        assert out[0]["hits_per_page"] == 30
+
+    def test_query_is_space_joined_tokens(self) -> None:
+        # Tokens joined by single space -- HN treats whitespace as token-AND.
+        out = _compile_hn_queries([_kw("CRM CLI")], _spec())
+        assert out[0]["query"] == "CRM CLI"
+
+    def test_created_at_i_appears_first_in_filter_string(self) -> None:
+        out = _compile_hn_queries(
+            [_kw("CRM founder", intent="context")], _spec(time_window="month")
+        )
+        # Convention: time filter first, quality filters after.
+        filters = out[0]["numeric_filters"]
+        assert filters.startswith("created_at_i>")

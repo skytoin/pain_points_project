@@ -18,7 +18,13 @@ See `docs/specs/2026-05-20-hackernews-source-design.md` §10.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import UTC, date, datetime, time, timedelta
+from typing import Any
+
+from discovery.jobs import JobSpec
+from discovery.llm.schemas import HackerNewsKeywordSpec
+from discovery.sources.keyword_tokens import decompose_keyword
 
 _TIME_WINDOW_SECONDS: dict[str, int] = {
     "hour": 3_600,
@@ -64,3 +70,56 @@ def _routing_for(intent: str) -> tuple[str, str, list[str]]:
     indicates a contract violation upstream.
     """
     return _ROUTING[intent]
+
+
+MAX_HN_QUERIES: int = 6
+
+
+def _build_fetch_params(
+    query_tokens: list[str],
+    endpoint: str,
+    tags: str,
+    numeric_filters: str,
+) -> dict[str, Any]:
+    """Assemble the per-query dict the HN adapter consumes (spec §10)."""
+    return {
+        "endpoint": endpoint,
+        "query": " ".join(query_tokens),
+        "tags": tags,
+        "numeric_filters": numeric_filters,
+        "hits_per_page": 30,
+    }
+
+
+def _compile_hn_queries(
+    specs: Iterable[HackerNewsKeywordSpec],
+    job_spec: JobSpec,
+) -> list[dict[str, Any]]:
+    """Decompose -> dedupe -> route -> numericFilters -> cap. Pure
+    function. Preserves the LLM's emission order (a ranking signal).
+    """
+    epoch = _time_window_epoch(job_spec.time_window, job_spec.as_of)
+    seen_tokens: set[tuple[str, ...]] = set()
+    out: list[dict[str, Any]] = []
+
+    for spec in specs:
+        tokens = decompose_keyword(spec.keyword)
+        if not tokens:
+            continue
+        token_key = tuple(tokens)
+        if token_key in seen_tokens:
+            continue
+        seen_tokens.add(token_key)
+
+        endpoint, tags, extra_filters = _routing_for(spec.intent)
+        filters: list[str] = []
+        if epoch is not None:
+            filters.append(f"created_at_i>{epoch}")
+        filters.extend(extra_filters)
+        numeric_filters = ",".join(filters)
+
+        out.append(_build_fetch_params(tokens, endpoint, tags, numeric_filters))
+        if len(out) >= MAX_HN_QUERIES:
+            break
+
+    return out
