@@ -111,12 +111,12 @@ Client-side `keep_hit` is a near-noop (only drops hits missing
 `objectID`, which Algolia never actually omits). All quality work
 happens server-side.
 
-## 7. Cap total queries per task at ~6.
+## 7. Cap total queries per task at ~12.
 
 Even though the rate limit is generous, more queries = more downstream
 LLM cost + duplicate noise, with diminishing returns. `MAX_HN_QUERIES
-= 6` (in `orchestrator/hackernews.py`). The Wave 0 LLM emits 8–15
-candidates; Python decomposes, dedupes, and truncates to the first 6
+= 12` (in `orchestrator/hackernews.py`). The Wave 0 LLM emits 15–20
+candidates; Python decomposes, dedupes, and truncates to the first 12
 in the LLM's emitted order (a ranking signal).
 
 ## 8. Set `hitsPerPage=30` explicitly. No pagination.
@@ -149,7 +149,7 @@ analog. One GET per query; non-2xx or `httpx.HTTPError` records that
 query's error and the loop continues to the next.
 
 Project-locked partial-success contract still applies: if `fetch`
-batches ~6 queries and some succeed, return what worked; only when
+batches ~12 queries and some succeed, return what worked; only when
 EVERY query fails does `fetch` raise (the first error) so the worker
 marks the task failed.
 
@@ -183,14 +183,14 @@ Wave 2 concern.
 
 - Don't try to OR keywords into one big query. The API doesn't
   support it. Run separate queries (Python compiles the candidate
-  list into ≤6 separate queries).
+  list into ≤12 separate queries).
 - Don't send long multi-word phrases. The decomposition cap is 2
   content tokens; longer phrases lose their tail tokens silently.
   This is the #1 silent-failure mode.
 - Don't write "Show HN" / "HN" / "Ask HN" inside a keyword. Those
   are tag filters, not content. Putting them in the query burns
   both content slots on tag-redundant words (next-most-common
-  failure mode). The v6 prompt explicitly forbids this.
+  failure mode). The v7 prompt explicitly forbids this.
 - Don't lowercase or stem tokens. Acronyms are high-signal on HN
   and casing/exact-match matter.
 - Don't use only `/search`. You'll systematically miss fresh

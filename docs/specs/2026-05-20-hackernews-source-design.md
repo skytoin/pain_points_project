@@ -77,7 +77,7 @@ owner held course on HN to broaden inputs).
 gap angles ("frustrated with X", "wish there was Y"). HN rewards
 capability/launch/technical-debate angles ("Show HN: X for Y", "X in
 Rust", "why we chose X over Y"). These are not "the same queries, two
-formats" — they are genuinely different. The v6 prompt must teach the
+formats" — they are genuinely different. The v6/v7 prompt must teach the
 LLM HN's *own* construction principles, not a pain-phrase port.
 
 ## 4. HN Algolia API — facts the design depends on
@@ -258,10 +258,11 @@ The HN orchestrator enqueues a no-op task and returns — it does
 NOT fall back to the template (§10). Mirrors
 `reddit_subreddits`'s permissive default.
 
-## 8. v6 prompt — adding HN keyword candidates to the existing Wave-0 prompt
+## 8. v6/v7 prompt — adding HN keyword candidates to the existing Wave-0 prompt
 
-`src/discovery/llm/prompts/query_expansion.py` bumps `VERSION` from
-`"v5"` to `"v6"`. Bumping correctly invalidates the combined Wave-0
+`src/discovery/llm/prompts/query_expansion.py` was bumped from `"v5"` to
+`"v6"` when HN support was added, and then to `"v7"` when the query cap
+was raised from 6 to 12. Bumping correctly invalidates the combined Wave-0
 cache (keyed by `f"{subreddit_phrases.VERSION}+{query_expansion.VERSION}"`
 — see the station). The existing "Two kinds of queries" section
 (Reddit-internal kinds 1+2) is untouched; we add a new top-level Kind 3
@@ -343,7 +344,7 @@ strictly by its own `intent` tag.
 
 ## What to emit for HN
 
-Emit 8-15 `HackerNewsKeywordSpec` objects in `hn_queries` — BUT if
+Emit 15-20 `HackerNewsKeywordSpec` objects in `hn_queries` — BUT if
 the industry has weak HN coverage (trades, local services, non-
 technical verticals), emit FEWER or ZERO candidates rather than
 inventing tech-framed phrases. Quality over quota; downstream is
@@ -355,14 +356,14 @@ fine with an empty list. Each candidate has:
                 surface and why it's HN-suitable.
 
 EMIT YOUR STRONGEST CANDIDATES FIRST. Python caps the fired set at
-6 in your emitted order, so ordering is a ranking signal — your
-best candidates must appear in the first ~6 positions.
+12 in your emitted order, so ordering is a ranking signal — your
+best candidates must appear in the first ~12 positions.
 
 Python downstream will decompose each keyword (drop stopwords, keep
 ≤2 content tokens, preserve casing), dedupe, route by `intent`,
 build server-side `numericFilters` from the job's time window
-(relaxed for launch queries), and cap the total at ~6 actually fired
-against the API. Emit MORE than 6 candidates so the post-decomposition
+(relaxed for launch queries), and cap the total at ~12 actually fired
+against the API. Emit MORE than 12 candidates so the post-decomposition
 survivors still cover both intents.
 
 ## HN illustration — ONE example industry only (do NOT reuse these)
@@ -394,7 +395,7 @@ You will emit a JSON object validated as `JobPlan` with THREE fields:
 
 - `reddit_queries`      — 25-30 RedditQuerySpec (see Kinds 1 & 2 above).
 - `reddit_subreddits`   — your shortlist of domain-relevant subs.
-- `hn_queries`          — 8-15 HackerNewsKeywordSpec (see Kind 3 above).
+- `hn_queries`          — 15-20 HackerNewsKeywordSpec (see Kind 3 above).
                           Re-derive HN-shaped angles for THIS industry;
                           do NOT translate the reddit_queries to HN.
 ```
@@ -402,7 +403,7 @@ You will emit a JSON object validated as `JobPlan` with THREE fields:
 And `build_user_message` adds one line near the closing instruction:
 
 ```
-Plus 8-15 hn_queries: HackerNews keyword candidates re-derived for
+Plus 15-20 hn_queries: HackerNews keyword candidates re-derived for
 THIS industry (capability/launch framing, NOT pain phrasing). Tag
 intent per candidate; aim ~⅔ launch / ⅓ context.
 ```
@@ -486,7 +487,7 @@ Internal helpers (each one job, ≤60 lines per CLAUDE.md):
   pipeline: decompose each `keyword` to ≤2 tokens, drop empties, dedup
   on the joined token tuple (case-sensitive, so `MCP` ≠ `mcp`), route
   by `spec.intent`, build `numericFilters` from `spec.time_window` and
-  `as_of`, cap the total at `MAX_HN_QUERIES=6` (preserving LLM order).
+  `as_of`, cap the total at `MAX_HN_QUERIES=12` (preserving LLM order).
 - `_routing_for(intent) -> tuple[str, str, list[str]]` — returns
   `(endpoint, tags, extra_numeric_filters)` for `launch` vs `context`.
 - `_time_window_epoch(time_window, as_of) -> int | None` — the
@@ -534,7 +535,7 @@ time.min, tzinfo=UTC) - timedelta(seconds=OFFSET)).timestamp())`.
 }
 ```
 
-**Cap policy.** `MAX_HN_QUERIES = 6` (per HN guide item 7 — more
+**Cap policy.** `MAX_HN_QUERIES = 12` (per HN guide item 7 — more
 queries = more downstream LLM cost without proportional yield). The
 compiler keeps the LLM's emitted order and truncates after the cap.
 
@@ -677,7 +678,7 @@ and the HN guide's item 12 ("Don't over-engineer it the way Reddit
 needs"). One GET per query. A non-2xx or `httpx.HTTPError` records the
 query's error and moves on. The project-locked partial-success
 contract overrides the guide's single-query "just throw" because we
-batch ~6 queries per task: if some succeed, return what worked; only
+batch ~12 queries per task: if some succeed, return what worked; only
 when *all* fail does `_run_one` raise so the worker can record the
 task as failed.
 
@@ -835,7 +836,7 @@ review comments and commits can cross-reference items by number:
 6. **Server-side `numericFilters` IS the quality floor.** `points`,
    `num_comments`, `created_at_i`. AND with commas. Relaxed for
    launch queries; tight for context queries.
-7. **Query budget cap ~6.** More queries = more downstream LLM cost
+7. **Query budget cap ~12.** More queries = more downstream LLM cost
    without proportional yield.
 8. **Set `hitsPerPage` explicitly (30). No pagination.**
 9. **Per-instance limiter, not a singleton.** Only one HN consumer;
@@ -915,7 +916,7 @@ test modules:
   a no-op task; does NOT trigger template fallback.
 - `_compile_hn_queries` routes by `intent` (launch→show_hn+by_date,
   context→story+search).
-- `_compile_hn_queries` caps at `MAX_HN_QUERIES=6` preserving LLM
+- `_compile_hn_queries` caps at `MAX_HN_QUERIES=12` preserving LLM
   order.
 - `_compile_hn_queries` dedupes on the joined token tuple
   (case-sensitive: `MCP` and `mcp` are different).
@@ -985,8 +986,8 @@ Reddit-specific.
   `claim_known_task`. Multi-job concurrent dispatch would require
   making `claim_one` itself race-safe (the worker comment already
   sketches the SQL); not in scope here.
-- **Prompt `VERSION` v5→v6 invalidates the combined Wave-0 cache for
-  all jobs.** First runs after the slice will be cold — expected.
+- **Prompt `VERSION` v5→v6→v7 invalidates the combined Wave-0 cache for
+  all jobs.** First runs after each bump will be cold — expected.
 - **Idempotency trap (unchanged).** Re-running the same
   `industry+location+as_of+time_window` returns the cached old job;
   `plan_job` short-circuits. To truly re-test the v6 prompt, change
