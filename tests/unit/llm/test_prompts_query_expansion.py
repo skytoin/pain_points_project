@@ -1,8 +1,7 @@
-"""Shape tests for the Wave 0 Call #2 prompt (query_expansion v6).
+"""Shape tests for the Wave 0 Call #2 prompt (query_expansion v7).
 
-Pins module shape, not wording. v6 adds the Kind 3 HN keyword candidates
-section, updates the master "What to emit" to list THREE fields, and
-extends build_user_message with an HN nudge. All v5 content retained.
+Pins module shape, not wording. v7 raises the HN query cap from 6 to 12
+(MAX_HN_QUERIES). All v6 content retained.
 """
 
 from __future__ import annotations
@@ -33,8 +32,8 @@ def _table() -> list[SubredditCandidate]:
 
 
 class TestPromptModule:
-    def test_version_is_v6(self) -> None:
-        assert qe.VERSION == "v6"
+    def test_version_is_v7(self) -> None:
+        assert qe.VERSION == "v7"
 
     def test_system_prompt_keeps_core_reddit_rules(self) -> None:
         sp = qe.SYSTEM_PROMPT
@@ -103,13 +102,13 @@ class TestBuildUserMessage:
         assert "year" in msg.lower()
 
 
-class TestPromptV6Additions:
-    """v6 = v5 plus the Kind 3 HN keyword candidate section and an
-    updated master 'What to emit' that lists THREE fields. Spec §8.
+class TestPromptV7Additions:
+    """v7 = v6 plus the 12-query cap wording. Raises HN query cap from 6
+    to 12 (MAX_HN_QUERIES). Spec §8.
     """
 
-    def test_version_is_v6(self) -> None:
-        assert VERSION == "v6"
+    def test_version_is_v7(self) -> None:
+        assert VERSION == "v7"
 
     def test_kind_3_section_present(self) -> None:
         assert "Kind 3" in SYSTEM_PROMPT

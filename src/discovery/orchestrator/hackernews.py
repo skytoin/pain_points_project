@@ -7,7 +7,7 @@ lives here in tested Python:
 - Token decomposition (delegated to `discovery.sources.keyword_tokens`).
 - Endpoint + tag routing from the LLM's per-candidate `intent` flag.
 - Server-side `numericFilters` from `JobSpec.time_window` and `as_of`.
-- The `MAX_HN_QUERIES=6` cap.
+- The `MAX_HN_QUERIES=12` cap.
 
 When `Job.job_plan` is null (Wave 0 failed) or fails validation, falls
 back to the deterministic capability-first template so HN keeps working
@@ -78,7 +78,7 @@ def _routing_for(intent: str) -> tuple[str, str, list[str]]:
     return _ROUTING[intent]
 
 
-MAX_HN_QUERIES: int = 6
+MAX_HN_QUERIES: int = 12
 
 
 def _build_fetch_params(

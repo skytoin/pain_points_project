@@ -156,12 +156,12 @@ class TestCompileHnQueries:
         assert "num_comments>3" in out[0]["numeric_filters"]
 
     def test_caps_at_max_hn_queries_preserving_llm_order(self) -> None:
-        kws = [_kw(f"kw{i} tok") for i in range(15)]
+        kws = [_kw(f"kw{i} tok") for i in range(20)]
         out = _compile_hn_queries(kws, _spec())
-        assert len(out) == MAX_HN_QUERIES == 6
+        assert len(out) == MAX_HN_QUERIES == 12
         # Order preserved -- LLM ranking signal (spec §8).
         assert out[0]["query"] == "kw0 tok"
-        assert out[5]["query"] == "kw5 tok"
+        assert out[11]["query"] == "kw11 tok"
 
     def test_hits_per_page_is_30(self) -> None:
         out = _compile_hn_queries([_kw("CRM CLI")], _spec())

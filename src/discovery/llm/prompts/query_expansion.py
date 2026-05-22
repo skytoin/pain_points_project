@@ -37,6 +37,10 @@ Versioning:
     avoidance, and graceful sparsity for non-tech industries.
     Master "What to emit" now lists THREE fields. Wave 0 cache
     invalidated automatically via the combined VERSION key.
+    v7 — raises the HN query cap from 6 to 12 (MAX_HN_QUERIES). Kind 3
+    "What to emit" now asks for 15-20 candidates and tells the LLM its
+    top ~12 (not ~6) get fired, so ranking covers the wider cap. Wave 0
+    cache invalidated automatically via the combined VERSION key.
 """
 
 from __future__ import annotations
@@ -50,7 +54,7 @@ from discovery.sources.reddit_subreddits import (
     render_candidate_table,
 )
 
-VERSION: str = "v6"
+VERSION: str = "v7"
 
 
 SYSTEM_PROMPT: str = """\
@@ -244,7 +248,7 @@ strictly by its own `intent` tag.
 
 ## What to emit for HN
 
-Emit 8-15 `HackerNewsKeywordSpec` objects in `hn_queries` -- BUT if
+Emit 15-20 `HackerNewsKeywordSpec` objects in `hn_queries` -- BUT if
 the industry has weak HN coverage (trades, local services, non-
 technical verticals), emit FEWER or ZERO candidates rather than
 inventing tech-framed phrases. Quality over quota; downstream is
@@ -256,14 +260,14 @@ fine with an empty list. Each candidate has:
                  surface and why it's HN-suitable.
 
 EMIT YOUR STRONGEST CANDIDATES FIRST. Python caps the fired set at
-6 in your emitted order, so ordering is a ranking signal -- your
-best candidates must appear in the first ~6 positions.
+12 in your emitted order, so ordering is a ranking signal -- your
+best candidates must appear in the first ~12 positions.
 
 Python downstream will decompose each keyword (drop stopwords, keep
 <=2 content tokens, preserve casing), dedupe, route by `intent`,
 build server-side `numericFilters` from the job's time window
-(relaxed for launch queries), and cap the total at ~6 actually fired
-against the API. Emit MORE than 6 candidates so the post-decomposition
+(relaxed for launch queries), and cap the total at ~12 actually fired
+against the API. Emit MORE than 12 candidates so the post-decomposition
 survivors still cover both intents.
 
 ## HN illustration -- ONE example industry only (do NOT reuse these)
@@ -307,7 +311,7 @@ You will emit a JSON object validated as `JobPlan` with THREE fields:
   (without the `r/` prefix). Up to ~12. These complement the queries
   themselves; Python code may use this list to seed per-sub queries
   or rank subs for follow-up.
-- `hn_queries` — 8-15 `HackerNewsKeywordSpec` objects (see "Kind 3 --
+- `hn_queries` — 15-20 `HackerNewsKeywordSpec` objects (see "Kind 3 --
   Hacker News keyword candidates" above). Re-derive HN-shaped angles
   for THIS industry; do NOT translate the reddit_queries to HN.
 
@@ -418,7 +422,7 @@ def build_user_message(spec: JobSpec, table: list[SubredditCandidate]) -> str:
     )
     lines.append("")
     lines.append(
-        "Plus 8-15 hn_queries: HackerNews keyword candidates re-derived "
+        "Plus 15-20 hn_queries: HackerNews keyword candidates re-derived "
         "for THIS industry (capability/launch framing, NOT pain phrasing). "
         "Tag intent per candidate; aim ~2/3 launch / 1/3 context."
     )
