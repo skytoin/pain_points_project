@@ -581,7 +581,7 @@ ranked by `viewCount`). `VIDEOS_BATCH = 50` (max ids per `videos.list`).
 
 - Transient failures (`httpx.TimeoutException`, network errors, HTTP 5xx,
   and 403/429 with reason `rateLimitExceeded` / `userRateLimitExceeded`)
-  → retried with bounded exponential backoff (tenacity, max 3 attempts).
+  → retried with bounded exponential backoff, max 3 attempts.
 - HTTP 403 with reason `quotaExceeded` / `dailyLimitExceeded` → raised as
   a dedicated `YouTubeQuotaExceeded` exception, NOT retried.
 - HTTP 403 with reason `commentsDisabled` → raised as a dedicated
@@ -591,15 +591,24 @@ ranked by `viewCount`). `VIDEOS_BATCH = 50` (max ids per `videos.list`).
   treated as non-retryable (fail that call) rather than retried into a
   possible wall.
 
-**Classification happens INSIDE the retry boundary, before tenacity
-decides.** `_get_json` itself inspects the 403 reason and raises the
-right exception class; tenacity is configured to retry ONLY the transient
-classes (`httpx.TimeoutException`, `httpx.TransportError`, HTTP-5xx
-wrapper, and a `YouTubeRateLimited` class). `YouTubeQuotaExceeded` and
-`CommentsDisabled` are NOT in tenacity's retry predicate, so they
-propagate on the first attempt — never retried into the wall. Getting
-this boundary backwards (classifying after tenacity) would retry a quota
-403 three times, burning 3 wasted units; the plan must keep the raise
+**Retry is hand-rolled with an injectable `sleep`, NOT tenacity** —
+mirroring `RedditSource._fetch_with_retries`. The source layer has no
+tenacity (Reddit hand-rolls; HN has no retry), and the injectable-sleep
+pattern is what lets tests exercise the backoff path without real waits
+under `filterwarnings=["error"]`. The constructor takes
+`sleep: Callable[[float], Awaitable[None]] = asyncio.sleep` exactly like
+Reddit. (This refines the earlier "tenacity" wording to match the
+codebase; behavior — retry transient/rate-limit, stop on quota, max 3 —
+is unchanged.)
+
+**Classification happens INSIDE the retry loop, before the retry
+decision.** `_get_json` inspects the 403 reason and raises the right
+exception class; the loop retries ONLY the transient classes
+(`httpx.TimeoutException`, `httpx.TransportError`, HTTP-5xx, and a
+`YouTubeRateLimited` class). `YouTubeQuotaExceeded` and `CommentsDisabled`
+are raised straight out of the loop and never retried. Getting this
+boundary backwards (classifying after the retry decision) would retry a
+quota 403 three times, burning 3 wasted units; the plan keeps the raise
 inside the wrapped call.
 
 **`fetch(params) -> list[RawRecord]`** — the three-step flow. Because the
@@ -663,8 +672,8 @@ the task failed. A `quotaExceeded` mid-job is a clean partial stop, not a
 task failure.
 
 **File-size note.** This adapter is heavier than HN's 175-line one (7
-pure helpers + constructor + `aclose` + `_get_json` with the tenacity
-wrapper and JSON-error-reason parsing + 2 custom exception classes + the
+pure helpers + constructor + `aclose` + `_get_json` with the hand-rolled
+retry loop and JSON-error-reason parsing + 2 custom exception classes + the
 3 fetch helpers + docstrings) — estimated ~350-450 lines, under the
 600-line cap. If the implementation crosses ~500 lines, split the pure
 helpers (URL builders, record converters, `extract_video_ids`,
