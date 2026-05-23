@@ -831,13 +831,16 @@ def _routing_handler(
 
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
-        if any(tok in url for tok in quota_on):
-            return _error_response(403, "quotaExceeded")
         if "/search?" in url:
+            q = _single_param(url, "q")  # decoded; robust vs `+`-encoding
+            if any(tok in q for tok in quota_on):
+                return _error_response(403, "quotaExceeded")
             for needle, ids in search_pages.items():
-                if f"q={needle}" in url or needle in url:
+                if needle in q:
                     return httpx.Response(200, json={"items": [
-                        {"id": {"kind": "youtube#video", "videoId": v}} for v in ids]})
+                        {"kind": "youtube#searchResult",
+                         "id": {"kind": "youtube#video", "videoId": v},
+                         "snippet": {"title": v}} for v in ids]})
             return httpx.Response(200, json={"items": []})
         if "/videos?" in url:
             ids = _ids_from_query(url, "id")
@@ -856,7 +859,22 @@ def _routing_handler(
     return handler
 ```
 
-(Implement the tiny `_ids_from_query` / `_single_param` URL-parsing test helpers with `urllib.parse`.) Then the cases — for example:
+The two URL-parse test helpers (decoded matching is robust against `urlencode`'s `+`-for-space and avoids accidental substring hits elsewhere in the URL):
+
+```python
+from urllib.parse import parse_qs, urlparse
+
+
+def _single_param(url: str, name: str) -> str:
+    return parse_qs(urlparse(url).query).get(name, [""])[0]
+
+
+def _ids_from_query(url: str, name: str) -> list[str]:
+    raw = _single_param(url, name)
+    return raw.split(",") if raw else []
+```
+
+Then the cases:
 
 ```python
 class TestFetch:
@@ -890,22 +908,124 @@ class TestFetch:
             await src.aclose()
 
     async def test_quota_stop_on_second_search_skips_third(self) -> None:
-        # query 2 hits the wall; query 3 must NOT be attempted; query-1
-        # results still flow through enrichment + comments.
-        ...  # assert via a call counter that the 3rd search url never fires
+        """query 2 hits the wall -> query 3 is NOT attempted; query-1's
+        video still flows through enrichment + comments."""
+        searched: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/search?" in url:
+                q = _single_param(url, "q")
+                searched.append(q)
+                if "wall" in q:
+                    return _error_response(403, "quotaExceeded")
+                return httpx.Response(200, json={"items": [
+                    {"id": {"kind": "youtube#video", "videoId": "v1"}, "snippet": {}}]})
+            if "/videos?" in url:
+                ids = _ids_from_query(url, "id")
+                return httpx.Response(200, json={"items": [
+                    {"kind": "youtube#video", "id": v, "snippet": {},
+                     "statistics": {"viewCount": "1"}} for v in ids]})
+            if "/commentThreads?" in url:
+                vid = _single_param(url, "videoId")
+                return httpx.Response(200, json={"items": [
+                    {"kind": "youtube#commentThread", "id": f"{vid}-c", "snippet": {"videoId": vid}}]})
+            return httpx.Response(404)
+
+        src = _src(handler)
+        try:
+            records = await src.fetch({"queries": [
+                _search_query(query="first ok"),
+                _search_query(query="wall hit"),
+                _search_query(query="third never"),
+            ]})
+            assert searched == ["first ok", "wall hit"]  # query 3 never fired
+            assert any(r.body.get("kind") == "youtube#video" for r in records)
+        finally:
+            await src.aclose()
 
     async def test_enrichment_quota_stop_falls_back_to_search_hits(self) -> None:
-        # videos.list 403 quotaExceeded -> records carry kind=youtube#searchResult
-        # for the un-enriched ids, and NO comment records.
-        ...
+        """videos.list 403 quotaExceeded -> un-enriched ids stored as
+        kind=youtube#searchResult; NO comment records (no stats to rank,
+        quota gone)."""
+        commented = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/search?" in url:
+                return httpx.Response(200, json={"items": [
+                    {"kind": "youtube#searchResult",
+                     "id": {"kind": "youtube#video", "videoId": "v1"},
+                     "snippet": {"title": "t"}}]})
+            if "/videos?" in url:
+                return _error_response(403, "quotaExceeded")
+            if "/commentThreads?" in url:
+                commented["n"] += 1
+                return httpx.Response(200, json={"items": []})
+            return httpx.Response(404)
+
+        src = _src(handler)
+        try:
+            records = await src.fetch({"queries": [_search_query()]})
+            assert {r.body.get("kind") for r in records} == {"youtube#searchResult"}
+            assert records[0].external_id == "v1"
+            assert commented["n"] == 0  # comment harvest skipped after enrichment quota-stop
+        finally:
+            await src.aclose()
 
     async def test_comments_disabled_skips_one_video(self) -> None:
-        ...
+        """commentsDisabled on v1 -> v1 skipped, v2 harvested; BOTH videos
+        still stored."""
+        handler = _routing_handler(
+            search_pages={"why": ["v1", "v2"]},
+            stats={"v1": "100", "v2": "50"},
+            disabled_videos={"v1"},
+        )
+        src = _src(handler)
+        try:
+            records = await src.fetch({"queries": [_search_query(query="why")]})
+            comment_vids = {
+                r.body["snippet"]["videoId"]
+                for r in records if r.body.get("kind") == "youtube#commentThread"
+            }
+            video_ids = {
+                r.external_id for r in records if r.body.get("kind") == "youtube#video"
+            }
+            assert comment_vids == {"v2"}
+            assert video_ids == {"v1", "v2"}
+        finally:
+            await src.aclose()
 
-    async def test_top_k_limits_comment_videos(self) -> None:
-        # COMMENT_TOP_K videos ranked by viewcount; with > K videos only
-        # the K highest-view get a comment call (assert via call counter).
-        ...
+    async def test_top_k_limits_comment_videos(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only the COMMENT_TOP_K highest-view videos get a comment call."""
+        import discovery.sources.youtube as yt
+
+        monkeypatch.setattr(yt, "COMMENT_TOP_K", 1)
+        commented: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/search?" in url:
+                return httpx.Response(200, json={"items": [
+                    {"id": {"kind": "youtube#video", "videoId": v}, "snippet": {}}
+                    for v in ["low", "high"]]})
+            if "/videos?" in url:
+                ids = _ids_from_query(url, "id")
+                views = {"low": "5", "high": "9999"}
+                return httpx.Response(200, json={"items": [
+                    {"kind": "youtube#video", "id": v, "snippet": {},
+                     "statistics": {"viewCount": views[v]}} for v in ids]})
+            if "/commentThreads?" in url:
+                commented.append(_single_param(url, "videoId"))
+                return httpx.Response(200, json={"items": []})
+            return httpx.Response(404)
+
+        src = _src(handler)
+        try:
+            await src.fetch({"queries": [_search_query()]})
+            assert commented == ["high"]  # top-1 by viewcount only
+        finally:
+            await src.aclose()
 
     async def test_all_searches_fail_raises(self) -> None:
         src = _src(lambda _: httpx.Response(500), max_retries=0)
@@ -916,7 +1036,7 @@ class TestFetch:
             await src.aclose()
 ```
 
-Fill in the `...` cases fully when implementing (they are listed so the reviewer checks each failure mode is covered).
+`_harvest_comments` reads the module-global `COMMENT_TOP_K` at call time, so the `monkeypatch.setattr(yt, "COMMENT_TOP_K", 1)` above takes effect.
 
 - [ ] **Step 2: Run; expect failures.**
 - [ ] **Step 3: Implement** `fetch` as a thin orchestrator over the three helpers (each <=60 lines):
@@ -1470,14 +1590,15 @@ def test_user_message_mentions_youtube() -> None:
 
 **Spec reference:** §13.
 
-- [ ] **Step 1: Write the failing tests.**
+- [ ] **Step 1: Write the failing tests.** Add this method INSIDE the existing `TestBuildDefaultRegistry` class (where `test_includes_hackernews_adapter` lives), so `self` is valid:
 
 ```python
-def test_includes_youtube_adapter(self) -> None:
-    from discovery.sources.youtube import YouTubeSource
-    registry = build_default_registry()
-    assert "youtube" in registry
-    assert isinstance(registry["youtube"], YouTubeSource)
+    def test_includes_youtube_adapter(self) -> None:
+        from discovery.sources.youtube import YouTubeSource  # noqa: PLC0415
+
+        registry = build_default_registry()
+        assert "youtube" in registry
+        assert isinstance(registry["youtube"], YouTubeSource)
 ```
 
 - [ ] **Step 2: Run; expect failure** (`"youtube" not in registry`).
@@ -1537,6 +1658,8 @@ async def test_three_tasks_dispatch_concurrently(self, maker: Any) -> None:
 ```
 
 (`_run_task_in_own_session` is unchanged — already task-id-generic — so this test passes once the double exists; the real change under test is `_run_discovery`'s wiring. Add a lightweight assertion or rely on the existing CLI smoke if present. If `_run_discovery` is not directly unit-tested, the wiring change is verified by the existing CLI integration path; keep this concurrency test as the regression guard.)
+
+**Keep the existing two-way test green.** Do NOT relax `test_two_tasks_dispatch_concurrently`'s `wall < 0.09` bound — only the new three-way test gets the looser `< 0.12` bound (a third 50ms branch widens the worst case). Both must pass.
 
 - [ ] **Step 2: Run; the new double-based test should pass once added; the wiring edit is verified by checks + the existing tests.**
 - [ ] **Step 3: Implement** the `cli/run.py` edits: import `enqueue_youtube_task_for_job`; after the HN enqueue, `youtube_task = await enqueue_youtube_task_for_job(session, job)`; extend the "queued tasks" print to include `youtube={youtube_task.id} (queries={len(youtube_task.params['queries'])})`; capture `youtube_task_id`; add the third `_run_task_in_own_session(maker, registry, youtube_task_id)` to the `asyncio.gather`; change "2 task(s) processed." → "3 task(s) processed."; add `assert youtube_task_id is not None`.
