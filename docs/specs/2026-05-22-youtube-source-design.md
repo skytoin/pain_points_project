@@ -485,6 +485,13 @@ carried in the dict (not hard-coded in the adapter) for the same
 testability reason the HN dict carries its transport flag: planning
 decides the shape, the adapter builds the URL.
 
+**Task `params` envelope.** `enqueue_youtube_task_for_job` wraps the
+compiled `list[dict]` exactly like HN: `params = {"queries": queries}`.
+The adapter reads `params["queries"]` (§10 step 1) and the CLI Phase-1
+print line reads `len(youtube_task.params["queries"])` (§12). This is the
+single interface between the orchestrator and the adapter — both sides
+agree on the `"queries"` key.
+
 **Template fallback** (`youtube_queries_for_spec`) — a no-LLM fallback so
 YouTube works with `OPENAI_API_KEY` unset, exactly like Reddit/HN. It
 emits a small deterministic pain-shaped set from the industry literal and
@@ -565,8 +572,8 @@ ranked by `viewCount`). `VIDEOS_BATCH = 50` (max ids per `videos.list`).
   `external_id=str(thread["id"])`, `body=thread` verbatim
   (`kind=youtube#commentThread`; carries `snippet.videoId`).
 - `search_hit_to_raw_record(item) -> RawRecord` — fallback only (see
-  step 3): `external_id=str(item["id"]["videoId"])`, `body=item`
-  verbatim (`kind=youtube#searchResult`).
+  step 2 enrichment quota-stop): `external_id=str(item["id"]["videoId"])`,
+  `body=item` verbatim (`kind=youtube#searchResult`).
 - `viewcount_of(video) -> int` — parse `statistics.viewCount` (string)
   to int, defaulting to 0 when absent (live/upcoming videos can lack it).
 
@@ -584,43 +591,87 @@ ranked by `viewCount`). `VIDEOS_BATCH = 50` (max ids per `videos.list`).
   treated as non-retryable (fail that call) rather than retried into a
   possible wall.
 
-**`fetch(params) -> list[RawRecord]`** — the three-step flow:
+**Classification happens INSIDE the retry boundary, before tenacity
+decides.** `_get_json` itself inspects the 403 reason and raises the
+right exception class; tenacity is configured to retry ONLY the transient
+classes (`httpx.TimeoutException`, `httpx.TransportError`, HTTP-5xx
+wrapper, and a `YouTubeRateLimited` class). `YouTubeQuotaExceeded` and
+`CommentsDisabled` are NOT in tenacity's retry predicate, so they
+propagate on the first attempt — never retried into the wall. Getting
+this boundary backwards (classifying after tenacity) would retry a quota
+403 three times, burning 3 wasted units; the plan must keep the raise
+inside the wrapped call.
+
+**`fetch(params) -> list[RawRecord]`** — the three-step flow. Because the
+flow has five branches and CLAUDE.md caps functions at 60 lines, `fetch`
+is a thin orchestrator over three named helpers (each one job, each
+independently testable):
+
+- `_search_all(queries) -> tuple[list[str], dict[str, dict]]` — runs the
+  search loop and returns `(ordered_unique_video_ids, items_by_id)`.
+  **It retains the raw search `items` keyed by videoId, not just the
+  ids** — the enrichment fallback (below) needs them. Handles the
+  quota-stop (abandon remaining queries) and per-query partial success.
+- `_enrich_videos(video_ids, items_by_id) -> tuple[list[RawRecord], list[dict]]`
+  — batches ids into `videos.list`, returns `(records, enriched_video_resources)`.
+  On `YouTubeQuotaExceeded` it stops and, for the ids not yet enriched,
+  emits `search_hit_to_raw_record` from the retained `items_by_id` so
+  discovery isn't lost.
+- `_harvest_comments(enriched_videos) -> list[RawRecord]` — ranks by
+  `viewcount_of` desc, takes the top `COMMENT_TOP_K`, harvests each via
+  `commentThreads.list`, skipping `CommentsDisabled` videos and stopping
+  on `YouTubeQuotaExceeded`.
 
 ```
-1. If self._api_key is None: log once, return [].
-2. SEARCH. For each query in params["queries"]:
-     try _get_json(build_search_url(q, key)); collect extract_video_ids.
-     - YouTubeQuotaExceeded -> stop the search loop (abandon remaining
-       queries; they would all hit the same wall). Keep ids gathered so far.
-     - other (httpx.HTTPError, ValueError) -> record error, continue
-       (partial success).
-   Dedup video ids preserving first-seen order.
-   If no ids and there were search errors and nothing gathered -> raise
-   the first error (task fails). If no ids and no errors -> return [].
-3. ENRICH. Batch ids into <=50-id videos.list calls.
-     try _get_json(build_videos_url(batch, key)); collect video resources.
-     - YouTubeQuotaExceeded -> stop enriching. FALLBACK: for the ids not
-       yet enriched, store search_hit_to_raw_record from the search items
-       we already have, so discovery isn't lost. Skip the comment step
-       (no viewCount to rank, and quota is gone).
-     - transient handled by _get_json's retry.
-   Records so far: one video_to_raw_record per enriched video.
-4. COMMENTS. Rank enriched videos by viewcount_of desc; take top
-   COMMENT_TOP_K. For each:
-     try _get_json(build_comments_url(video_id, key)); collect
-       comment_to_raw_record per thread in items.
-     - CommentsDisabled -> skip this video, continue.
-     - YouTubeQuotaExceeded -> stop the comment loop, keep what we have.
-     - transient handled by _get_json's retry.
-5. Return [all video records] + [all comment-thread records]
-   (+ any search-hit fallback records from step 3).
+fetch(params):
+  0. If self._api_key is None: log once, return [].
+  1. ids, items_by_id = _search_all(params["queries"])
+       SEARCH loop: for each query, _get_json(build_search_url(...));
+       extract_video_ids AND retain the raw item under items_by_id[videoId].
+       - YouTubeQuotaExceeded -> stop the loop (remaining queries would
+         hit the same wall). Keep ids/items gathered so far.
+       - other (httpx.HTTPError, ValueError) -> record error, continue
+         (partial success). Dedup ids preserving first-seen order.
+     If no ids and there were search errors -> raise the first error
+     (task fails). If no ids and no errors -> return [].
+  2. video_records, enriched = _enrich_videos(ids, items_by_id)
+       Batch ids into <=50-id videos.list calls; one video_to_raw_record
+       per enriched video.
+       - YouTubeQuotaExceeded -> stop enriching. FALLBACK: for ids not
+         yet enriched, emit search_hit_to_raw_record from items_by_id so
+         discovery isn't lost. (enriched stays partial; comment step gets
+         only what was enriched.)
+  3. comment_records = _harvest_comments(enriched)
+       Rank enriched by viewcount_of desc; take top COMMENT_TOP_K; for
+       each, _get_json(build_comments_url(...)); comment_to_raw_record
+       per thread.
+       - CommentsDisabled -> skip this video, continue.
+       - YouTubeQuotaExceeded -> stop the loop, keep what we have.
+  4. return video_records + comment_records
+       (video_records already includes any search-hit fallback records
+       from step 2.)
 ```
+
+Videos missing `statistics.viewCount` (live/upcoming) get `viewcount_of`
+= 0 and sort to the bottom of the comment-harvest ranking — intended:
+they are the least valuable comment targets.
 
 **Partial success contract** (project-locked, same as Reddit/HN): a job
 that gets *some* records returns them; only a total wipeout where the
 search step gathered nothing and errored re-raises so the worker marks
 the task failed. A `quotaExceeded` mid-job is a clean partial stop, not a
 task failure.
+
+**File-size note.** This adapter is heavier than HN's 175-line one (7
+pure helpers + constructor + `aclose` + `_get_json` with the tenacity
+wrapper and JSON-error-reason parsing + 2 custom exception classes + the
+3 fetch helpers + docstrings) — estimated ~350-450 lines, under the
+600-line cap. If the implementation crosses ~500 lines, split the pure
+helpers (URL builders, record converters, `extract_video_ids`,
+`viewcount_of`, the exception classes) into a sibling pure module
+`src/discovery/sources/youtube_helpers.py`, mirroring how HN factored
+`keyword_tokens.py`. The plan should size the file at the end of Chunk 2
+and split then if needed, rather than discovering it mid-implementation.
 
 **Per-call log lines** (skill-21 analog): each search / enrich / comment
 call logs URL (with the key redacted), status, elapsed_ms, and counts
@@ -636,7 +687,12 @@ youtube_api_key: SecretStr | None = None
 ```
 
 Optional, defaults to `None`, mirrors every other source credential.
-When unset the adapter no-ops (§10 step 1). No other settings change.
+When unset the adapter no-ops (§10 step 0). No other settings change.
+
+Note: `settings.py` already defines an unused `google_api_key` field. It
+is **intentionally not reused** — a dedicated `youtube_api_key` keeps
+YouTube separable from other Google services (e.g. a future Google Places
+source) that would want their own key. Owner decision (§18).
 
 ## 12. Parallel fan-out (`src/discovery/cli/run.py`)
 
