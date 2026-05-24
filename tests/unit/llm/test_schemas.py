@@ -10,6 +10,7 @@ from discovery.llm.schemas import (
     JobPlan,
     RedditQuerySpec,
     SubredditSearchPhrases,
+    YouTubeQuerySpec,
 )
 
 
@@ -225,3 +226,35 @@ class TestHackerNewsKeywordSpec:
         spec = HackerNewsKeywordSpec(keyword="x", intent="launch", rationale="r")
         with pytest.raises(ValidationError):
             spec.keyword = "y"  # type: ignore[misc]
+
+
+class TestYouTubeQuerySpec:
+    def test_minimal_valid(self) -> None:
+        spec = YouTubeQuerySpec(
+            query="why I quit commercial cleaning",
+            intent="complaint",
+            rationale="quit-the-industry pain monologue",
+        )
+        assert spec.query == "why I quit commercial cleaning"
+        assert spec.intent == "complaint"
+
+    def test_intent_must_be_complaint_or_discussion(self) -> None:
+        with pytest.raises(ValidationError):
+            YouTubeQuerySpec(query="x", intent="other", rationale="r")  # type: ignore[arg-type]
+
+    def test_query_min_length(self) -> None:
+        with pytest.raises(ValidationError):
+            YouTubeQuerySpec(query="", intent="complaint", rationale="r")
+
+    def test_query_max_length(self) -> None:
+        with pytest.raises(ValidationError):
+            YouTubeQuerySpec(query="x" * 121, intent="discussion", rationale="r")
+
+    def test_rationale_min_length(self) -> None:
+        with pytest.raises(ValidationError):
+            YouTubeQuerySpec(query="x", intent="complaint", rationale="")
+
+    def test_frozen_blocks_assignment(self) -> None:
+        spec = YouTubeQuerySpec(query="x", intent="complaint", rationale="r")
+        with pytest.raises(ValidationError):
+            spec.query = "y"  # type: ignore[misc]

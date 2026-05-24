@@ -115,6 +115,42 @@ class HackerNewsKeywordSpec(BaseModel):
     )
 
 
+class YouTubeQuerySpec(BaseModel):
+    """Wave 0 LLM YouTube search candidate. Python downstream normalizes,
+    dedupes, applies the time-window publishedAfter floor, caps at
+    MAX_YT_QUERIES, and runs the three-step fetch. See
+    `docs/specs/2026-05-22-youtube-source-design.md` sections 7-10.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    query: str = Field(
+        min_length=1,
+        max_length=120,
+        description=(
+            "Full-text YouTube search phrase, emotion/pain-shaped and "
+            "re-derived for THIS industry (e.g. 'why I quit commercial "
+            "cleaning', 'Jobber vs Housecall Pro'). Used near-verbatim as "
+            "the `q` parameter; YouTube is full-text relevance search, "
+            "NOT token-AND, so no decomposition is applied."
+        ),
+    )
+    intent: Literal["complaint", "discussion"] = Field(
+        description=(
+            "complaint -> the video itself is the pain (why-I-quit, "
+            "horror stories, rant, worst-part, wish-I-knew). discussion "
+            "-> the pain is in the comments and the video reveals "
+            "tools/workflows (tutorials, tips, reviews, A-vs-B, "
+            "day-in-the-life). Used for LLM generation balance and "
+            "downstream tagging; does NOT route API params."
+        ),
+    )
+    rationale: str = Field(
+        min_length=1,
+        description="Why this YouTube candidate is worth running.",
+    )
+
+
 class JobPlan(BaseModel):
     """LLM-produced query plan for one Job. Wave 0's output.
 
