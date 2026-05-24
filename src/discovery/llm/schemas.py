@@ -172,6 +172,16 @@ class JobPlan(BaseModel):
             "to the no-LLM template in orchestrator/hackernews.py."
         ),
     )
+    youtube_queries: list[YouTubeQuerySpec] = Field(
+        default_factory=list,
+        description=(
+            "Wave 0 YouTube search candidates. Permissive default (no "
+            "min_length) is deliberate: a strict floor would let YouTube "
+            "under-production raise QueryExpansionError and sink the "
+            "Reddit grounded plan. Sparsity degrades to the no-LLM "
+            "template in orchestrator/youtube.py."
+        ),
+    )
 
 
 class SubredditSearchPhrases(BaseModel):

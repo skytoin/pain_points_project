@@ -78,16 +78,21 @@ class TestJobPlan:
     def test_extra_fields_round_trip(self) -> None:
         """extra='allow' — future prompts can emit extra fields and they
         stay on the model (and on Job.job_plan JSON) without losing them.
-        model_validate re-validates, so the list must satisfy the 25 floor."""
+        model_validate re-validates, so the list must satisfy the 25 floor.
+        youtube_queries is now a typed field so it validates properly."""
         plan = JobPlan.model_validate(
             {
                 "reddit_queries": [_good_query().model_dump() for _ in range(25)],
-                "youtube_queries": ["a", "b"],  # not a typed field yet
+                "youtube_queries": [
+                    {"query": "why plumbers quit", "intent": "complaint", "rationale": "r"},
+                ],
+                "future_field": "kept",  # still an untyped extra
             }
         )
         dumped = plan.model_dump()
         assert "youtube_queries" in dumped
-        assert dumped["youtube_queries"] == ["a", "b"]
+        assert len(dumped["youtube_queries"]) == 1
+        assert dumped["future_field"] == "kept"
 
     def test_reddit_subreddits_defaults_to_empty(self) -> None:
         plan = JobPlan(reddit_queries=[_good_query() for _ in range(25)])
@@ -258,3 +263,29 @@ class TestYouTubeQuerySpec:
         spec = YouTubeQuerySpec(query="x", intent="complaint", rationale="r")
         with pytest.raises(ValidationError):
             spec.query = "y"  # type: ignore[misc]
+
+
+class TestJobPlanYoutubeQueries:
+    def test_youtube_queries_defaults_to_empty_list(self) -> None:
+        plan = JobPlan(reddit_queries=_make_reddit_queries())
+        assert plan.youtube_queries == []
+
+    def test_youtube_queries_accepts_list(self) -> None:
+        plan = JobPlan(
+            reddit_queries=_make_reddit_queries(),
+            youtube_queries=[
+                YouTubeQuerySpec(query="day in the life plumber",
+                                 intent="discussion", rationale="r"),
+            ],
+        )
+        assert len(plan.youtube_queries) == 1
+        assert plan.youtube_queries[0].intent == "discussion"
+
+    def test_hn_and_youtube_coexist(self) -> None:
+        plan = JobPlan(
+            reddit_queries=_make_reddit_queries(),
+            hn_queries=[HackerNewsKeywordSpec(keyword="CRM CLI", intent="launch", rationale="r")],
+            youtube_queries=[YouTubeQuerySpec(query="x y", intent="complaint", rationale="r")],
+        )
+        assert len(plan.hn_queries) == 1
+        assert len(plan.youtube_queries) == 1
