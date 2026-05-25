@@ -18,6 +18,8 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlencode
 
+from discovery.sources.base import RawRecord
+
 _API_BASE = "https://www.googleapis.com/youtube/v3"
 
 
@@ -58,3 +60,43 @@ def build_comments_url(video_id: str, api_key: str) -> str:
         "key": api_key,
     }
     return f"{_API_BASE}/commentThreads?{urlencode(params)}"
+
+
+def extract_video_ids(search_payload: dict[str, Any]) -> list[str]:
+    """Pull videoIds from a search.list payload, skipping non-video items
+    (defensive even with type=video)."""
+    out: list[str] = []
+    for item in search_payload.get("items", []):
+        vid = item.get("id", {}).get("videoId")
+        if vid:
+            out.append(str(vid))
+    return out
+
+
+def video_to_raw_record(video: dict[str, Any]) -> RawRecord:
+    """videos.list resource -> RawRecord. Verbatim (kind=youtube#video)."""
+    return RawRecord(source="youtube", external_id=str(video["id"]), body=video)
+
+
+def comment_to_raw_record(thread: dict[str, Any]) -> RawRecord:
+    """commentThreads.list resource -> RawRecord. Verbatim; body carries
+    snippet.videoId so the video link survives (kind=youtube#commentThread)."""
+    return RawRecord(source="youtube", external_id=str(thread["id"]), body=thread)
+
+
+def search_hit_to_raw_record(item: dict[str, Any]) -> RawRecord:
+    """Fallback only (enrichment quota-stop): store the search item
+    verbatim (kind=youtube#searchResult)."""
+    return RawRecord(source="youtube", external_id=str(item["id"]["videoId"]), body=item)
+
+
+def viewcount_of(video: dict[str, Any]) -> int:
+    """Parse statistics.viewCount (a string) to int; 0 when absent
+    (live/upcoming videos can lack it -> they sort last for comments)."""
+    raw = video.get("statistics", {}).get("viewCount")
+    if raw is None:
+        return 0
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0

@@ -10,6 +10,11 @@ from discovery.sources.youtube import (
     build_comments_url,
     build_search_url,
     build_videos_url,
+    comment_to_raw_record,
+    extract_video_ids,
+    search_hit_to_raw_record,
+    video_to_raw_record,
+    viewcount_of,
 )
 
 _KEY = "test-key"
@@ -78,3 +83,52 @@ class TestBuildUrls:
         assert "order=relevance" in url
         assert "maxResults=100" in url
         assert "key=test-key" in url
+
+
+class TestRecordHelpers:
+    def test_extract_video_ids_skips_non_video_items(self) -> None:
+        payload = {
+            "items": [
+                {"id": {"kind": "youtube#video", "videoId": "v1"}},
+                {"id": {"kind": "youtube#channel", "channelId": "c1"}},  # no videoId
+                {"id": {"kind": "youtube#video", "videoId": "v2"}},
+            ]
+        }
+        assert extract_video_ids(payload) == ["v1", "v2"]
+
+    def test_video_to_raw_record_verbatim(self) -> None:
+        video = {
+            "kind": "youtube#video",
+            "id": "v1",
+            "snippet": {"title": "t"},
+            "statistics": {"viewCount": "1000"},
+        }
+        rec = video_to_raw_record(video)
+        assert rec.source == "youtube"
+        assert rec.external_id == "v1"
+        assert rec.body == video  # verbatim
+
+    def test_comment_to_raw_record_verbatim_carries_video_id(self) -> None:
+        thread = {
+            "kind": "youtube#commentThread",
+            "id": "ct1",
+            "snippet": {"videoId": "v1", "topLevelComment": {"snippet": {"textDisplay": "x"}}},
+        }
+        rec = comment_to_raw_record(thread)
+        assert rec.source == "youtube"
+        assert rec.external_id == "ct1"
+        assert rec.body["snippet"]["videoId"] == "v1"
+
+    def test_search_hit_to_raw_record_uses_video_id(self) -> None:
+        item = {"id": {"videoId": "v1"}, "snippet": {"title": "t"}}
+        rec = search_hit_to_raw_record(item)
+        assert rec.source == "youtube"
+        assert rec.external_id == "v1"
+        assert rec.body == item
+
+    def test_viewcount_of_parses_string(self) -> None:
+        assert viewcount_of({"statistics": {"viewCount": "1234"}}) == 1234
+
+    def test_viewcount_of_missing_defaults_zero(self) -> None:
+        assert viewcount_of({"statistics": {}}) == 0
+        assert viewcount_of({}) == 0
