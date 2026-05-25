@@ -41,6 +41,13 @@ Versioning:
     "What to emit" now asks for 15-20 candidates and tells the LLM its
     top ~12 (not ~6) get fired, so ranking covers the wider cap. Wave 0
     cache invalidated automatically via the combined VERSION key.
+    v8 — adds a fourth output (`youtube_queries`) alongside the existing
+    reddit/hn fields. Introduces the "Kind 4 — YouTube keyword
+    candidates" section teaching the seven pain surfaces, the
+    emotion-search templates, the complaint/discussion intent tagging,
+    emit-15-20-top-10-fire ranking, and graceful sparsity. Master
+    "What to emit" now lists FOUR fields. Wave 0 cache invalidated
+    automatically via the combined VERSION key.
 """
 
 from __future__ import annotations
@@ -54,7 +61,7 @@ from discovery.sources.reddit_subreddits import (
     render_candidate_table,
 )
 
-VERSION: str = "v7"
+VERSION: str = "v8"
 
 
 SYSTEM_PROMPT: str = """\
@@ -291,6 +298,105 @@ HN-shaped angles. Do not bolt this CRM vocabulary onto another
 industry the way you must not reuse the wedding-photography
 illustration above.
 
+# Kind 4 -- YouTube keyword candidates (a SEPARATE output: youtube_queries)
+
+YouTube is a third, distinct surface with its own keyword style. It is
+NOT Reddit and NOT HN -- do not port either sibling's phrasings here.
+`youtube_queries` is a separate, structurally different output. On
+YouTube the richest pain signal is often not the video but the COMMENTS
+under it, plus whole genres of pain-monologue video. YouTube search is
+full-text relevance (not token-AND), so write natural phrases; no
+decomposition is applied.
+
+## The seven surfaces where pain hides on YouTube
+
+Your searches should land on these:
+
+1. Comments under tutorials -- literal pain in plain English ("I
+   followed this exactly but Y breaks"). The single best surface.
+2. "Why I quit [X]" videos -- pure pain monologues.
+3. Review videos and their comments -- explicit cons, plus the cons the
+   reviewer missed surfacing in the comments.
+4. "Day in the life of [profession]" -- visible friction (the 5 apps,
+   the manual data entry, the workarounds).
+5. "Things I wish I knew before [becoming X]" -- retrospective pain.
+6. Storytime / horror-story videos -- pain compiled across many people.
+7. Live Q&A / AMAs -- pain verbalized in real time.
+
+## Emotion-search templates (re-derive for THIS industry, never copy)
+
+These are query SHAPES. Substitute the real role/tool/profession/
+industry words for THIS industry; never emit the literal placeholders:
+
+- "why I quit {role}"
+- "{tool} sucks" / "{tool} broken"
+- "things nobody tells you about {profession}"
+- "{role} horror stories"
+- "worst part of being {profession}"
+- "{toolA} vs {toolB}"   (comparison-video comments explain which tool
+  failed people and why -- a very strong shape)
+- "day in the life {profession}"
+- "I hate {thing}" / "rant about {thing}"
+- "{industry} tips"      (the comments under tip videos are people
+  asking what they struggle with)
+
+## Tag each candidate's INTENT -- complaint or discussion
+
+For every YouTube candidate you emit, mark `intent`:
+
+- complaint -- the video ITSELF is the pain (why-I-quit, horror
+  stories, rant, worst-part, things-I-wish-I-knew). The signal is in
+  the video.
+- discussion -- the pain is in the COMMENTS and the video reveals
+  tools/workflows (tutorials, tips, reviews, A-vs-B, day-in-the-life).
+  The signal is under the video.
+
+Aim for a BALANCED MIX (roughly half complaint, half discussion). The
+`intent` tag balances your generation and tags the result downstream;
+it does NOT route any API parameters, and Python does NOT enforce a
+ratio.
+
+## What to emit for YouTube
+
+Emit 15-20 `YouTubeQuerySpec` objects in `youtube_queries`, STRONGEST
+FIRST. Python dedupes and fires the top 10 in your emitted order, so
+ordering is a ranking signal -- your best candidates must appear in the
+first ~10 positions. Emit MORE than 10 so post-dedup survivors fill the
+fired set. BUT if the industry has weak YouTube coverage, emit FEWER or
+ZERO candidates rather than manufacturing generic filler phrases.
+Quality over quota; downstream is fine with an empty list. Each
+candidate has:
+
+- `query`     -- the full-text YouTube search phrase, emotion/pain-
+                 shaped, re-derived for THIS industry.
+- `intent`    -- `complaint` or `discussion`.
+- `rationale` -- one short sentence: why this candidate is worth
+                 running.
+
+## YouTube illustration -- ONE example industry only (do NOT reuse these)
+
+For the example industry "mobile dog grooming", showing pain-shaped
+phrases tagged by intent:
+
+- "why I quit dog grooming" (complaint) -- quit-the-trade monologues.
+- "dog grooming horror stories" (complaint) -- compiled pain.
+- "worst part of being a dog groomer" (complaint) -- direct frustration.
+- "things nobody tells you about dog grooming" (complaint) --
+  retrospective pain.
+- "mobile grooming van tour" (discussion) -- comments reveal equipment
+  and workflow friction.
+- "day in the life mobile dog groomer" (discussion) -- visible manual
+  workarounds.
+- "Gingr vs MoeGo" (discussion) -- booking-software comparison; comments
+  explain which tool failed groomers.
+- "dog grooming business tips" (discussion) -- tip-video comments are
+  groomers asking what they struggle with.
+
+For ANY OTHER industry you must RE-DERIVE different emotion/pain-shaped
+angles from THAT industry's real roles, tools, and frustrations. Do NOT
+reuse, lightly edit, or anchor on this dog-grooming vocabulary, and do
+NOT translate the reddit_queries or hn_queries to YouTube.
+
 For each query, you choose:
 
 - Endpoint (`per_sub` or `site_wide`)
@@ -301,7 +407,7 @@ For each query, you choose:
 
 # What to emit
 
-You will emit a JSON object validated as `JobPlan` with THREE fields:
+You will emit a JSON object validated as `JobPlan` with FOUR fields:
 
 - `reddit_queries` — between 25 and 30 `RedditQuerySpec` objects.
   Each has `endpoint`, `q`, `subreddit` (set for per_sub only),
@@ -314,6 +420,10 @@ You will emit a JSON object validated as `JobPlan` with THREE fields:
 - `hn_queries` — 15-20 `HackerNewsKeywordSpec` objects (see "Kind 3 --
   Hacker News keyword candidates" above). Re-derive HN-shaped angles
   for THIS industry; do NOT translate the reddit_queries to HN.
+- `youtube_queries` -- 15-20 `YouTubeQuerySpec` objects (see "Kind 4 --
+  YouTube keyword candidates" above). Re-derive emotion/pain-shaped
+  angles for THIS industry; do NOT translate the reddit/hn queries to
+  YouTube.
 
 Each `rationale` is mandatory and visible to the engineer reviewing
 plans. Be concrete: "scopes to nurse community for willingness-to-pay
@@ -425,5 +535,13 @@ def build_user_message(spec: JobSpec, table: list[SubredditCandidate]) -> str:
         "Plus 15-20 hn_queries: HackerNews keyword candidates re-derived "
         "for THIS industry (capability/launch framing, NOT pain phrasing). "
         "Tag intent per candidate; aim ~2/3 launch / 1/3 context."
+    )
+    lines.append("")
+    lines.append(
+        "Plus 15-20 youtube_queries: YouTube search candidates re-derived "
+        "for THIS industry (emotion/pain-shaped: why-I-quit, horror "
+        "stories, A-vs-B, day-in-the-life, tutorial/tips whose comments "
+        "hold pain). Tag intent (complaint or discussion) per candidate; "
+        "aim for a balanced mix."
     )
     return "\n".join(lines)

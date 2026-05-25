@@ -1,7 +1,8 @@
-"""Shape tests for the Wave 0 Call #2 prompt (query_expansion v7).
+"""Shape tests for the Wave 0 Call #2 prompt (query_expansion v8).
 
-Pins module shape, not wording. v7 raises the HN query cap from 6 to 12
-(MAX_HN_QUERIES). All v6 content retained.
+Pins module shape, not wording. v8 adds a fourth output (youtube_queries)
+via the "Kind 4 -- YouTube keyword candidates" section. All v7 content
+retained.
 """
 
 from __future__ import annotations
@@ -32,8 +33,8 @@ def _table() -> list[SubredditCandidate]:
 
 
 class TestPromptModule:
-    def test_version_is_v7(self) -> None:
-        assert qe.VERSION == "v7"
+    def test_version_is_v8(self) -> None:
+        assert qe.VERSION == "v8"
 
     def test_system_prompt_keeps_core_reddit_rules(self) -> None:
         sp = qe.SYSTEM_PROMPT
@@ -104,11 +105,8 @@ class TestBuildUserMessage:
 
 class TestPromptV7Additions:
     """v7 = v6 plus the 12-query cap wording. Raises HN query cap from 6
-    to 12 (MAX_HN_QUERIES). Spec §8.
+    to 12 (MAX_HN_QUERIES). Spec §8. Retained under v8.
     """
-
-    def test_version_is_v7(self) -> None:
-        assert VERSION == "v7"
 
     def test_kind_3_section_present(self) -> None:
         assert "Kind 3" in SYSTEM_PROMPT
@@ -135,12 +133,6 @@ class TestPromptV7Additions:
     def test_python_does_not_enforce_ratio_clarifier_present(self) -> None:
         assert "Python does NOT enforce the ratio" in SYSTEM_PROMPT
 
-    def test_master_what_to_emit_lists_three_fields(self) -> None:
-        assert "JobPlan` with THREE fields" in SYSTEM_PROMPT
-        assert "reddit_queries" in SYSTEM_PROMPT
-        assert "reddit_subreddits" in SYSTEM_PROMPT
-        assert "hn_queries" in SYSTEM_PROMPT
-
     def test_build_user_message_includes_hn_nudge(self) -> None:
         spec = JobSpec(industry="x", as_of=date(2026, 5, 20), time_window="month")
         table = [
@@ -157,3 +149,55 @@ class TestPromptV7Additions:
         assert "hn_queries" in msg
         assert "HackerNews keyword candidates" in msg
         assert "capability/launch framing" in msg
+
+
+class TestPromptV8Additions:
+    """v8 = v7 plus the fourth output (youtube_queries) via the "Kind 4 --
+    YouTube keyword candidates" section. Spec §8.
+    """
+
+    def test_version_is_v8(self) -> None:
+        assert VERSION == "v8"
+
+    def test_kind_4_section_present(self) -> None:
+        assert "youtube_queries" in SYSTEM_PROMPT
+        assert "Kind 4" in SYSTEM_PROMPT
+        assert "complaint" in SYSTEM_PROMPT
+        assert "discussion" in SYSTEM_PROMPT
+        assert "day in the life" in SYSTEM_PROMPT
+
+    def test_youtube_intent_tagging_taught(self) -> None:
+        assert "intent" in SYSTEM_PROMPT
+        # complaint = the video IS the pain; discussion = pain in comments.
+        assert "horror stories" in SYSTEM_PROMPT
+        assert "why I quit" in SYSTEM_PROMPT
+
+    def test_youtube_graceful_sparsity_present(self) -> None:
+        assert "Quality over quota" in SYSTEM_PROMPT
+
+    def test_youtube_re_derive_guard_present(self) -> None:
+        assert "do NOT translate the reddit" in SYSTEM_PROMPT or "Re-derive" in SYSTEM_PROMPT
+
+    def test_master_what_to_emit_lists_four_fields(self) -> None:
+        assert "JobPlan` with FOUR fields" in SYSTEM_PROMPT
+        assert "reddit_queries" in SYSTEM_PROMPT
+        assert "reddit_subreddits" in SYSTEM_PROMPT
+        assert "hn_queries" in SYSTEM_PROMPT
+        assert "youtube_queries" in SYSTEM_PROMPT
+
+    def test_build_user_message_includes_youtube_nudge(self) -> None:
+        spec = JobSpec(industry="x", as_of=date(2026, 5, 20), time_window="month")
+        table = [
+            SubredditCandidate(
+                name="startups",
+                subscribers=5000,
+                active_user_count=120,
+                subreddit_type="public",
+                public_description="x",
+            )
+        ]
+        msg = build_user_message(spec, table)
+
+        assert "youtube_queries" in msg
+        assert "complaint" in msg
+        assert "discussion" in msg
