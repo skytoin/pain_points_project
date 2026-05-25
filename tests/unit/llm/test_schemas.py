@@ -274,8 +274,9 @@ class TestJobPlanYoutubeQueries:
         plan = JobPlan(
             reddit_queries=_make_reddit_queries(),
             youtube_queries=[
-                YouTubeQuerySpec(query="day in the life plumber",
-                                 intent="discussion", rationale="r"),
+                YouTubeQuerySpec(
+                    query="day in the life plumber", intent="discussion", rationale="r"
+                ),
             ],
         )
         assert len(plan.youtube_queries) == 1
