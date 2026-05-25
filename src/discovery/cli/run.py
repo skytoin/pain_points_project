@@ -183,9 +183,11 @@ def run_command(
         "-t",
         help=(
             "Search time window: hour | day | week | month | year | all. "
-            "Default month. Applies to BOTH Reddit (`t` parameter) and HN "
-            "(`numericFilters` recency floor via JobSpec.time_window). Use year "
-            "for niche / B2B topics where a month doesn't produce enough signal."
+            "Default month. Applies to ALL THREE sources via "
+            "JobSpec.time_window: Reddit (`t` parameter), HackerNews "
+            "(`numericFilters` recency floor), and YouTube (`publishedAfter` "
+            "RFC 3339 floor). Use year for niche / B2B topics where a month "
+            "doesn't produce enough signal."
         ),
     ),
 ) -> None:

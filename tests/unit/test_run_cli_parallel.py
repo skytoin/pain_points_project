@@ -175,4 +175,9 @@ class TestParallelFanout:
         )
         wall = time.monotonic() - t0
         assert len(started) == 3
+
+        # All three started within 30ms of each other -- overlapped, not
+        # staggered sequentially. Mirrors the two-way test's overlap check.
+        assert max(started.values()) - min(started.values()) < 0.03
+
         assert wall < 0.12, f"wall={wall:.3f}s -- looks sequential"

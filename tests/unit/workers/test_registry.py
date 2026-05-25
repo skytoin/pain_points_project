@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from discovery.sources.hackernews import HackerNewsSource
 from discovery.sources.reddit import RedditSource
+from discovery.sources.youtube import YouTubeSource
 from discovery.workers import build_default_registry
 
 
@@ -24,8 +25,6 @@ class TestBuildDefaultRegistry:
         assert hasattr(hn, "aclose")
 
     def test_includes_youtube_adapter(self) -> None:
-        from discovery.sources.youtube import YouTubeSource  # noqa: PLC0415
-
         registry = build_default_registry()
         assert "youtube" in registry
         assert isinstance(registry["youtube"], YouTubeSource)
