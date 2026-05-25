@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     reddit_user_agent: str = "discovery-pipeline/0.1"
 
     google_api_key: SecretStr | None = None
+    youtube_api_key: SecretStr | None = None
     yelp_api_key: SecretStr | None = None
     apollo_api_key: SecretStr | None = None
     apify_token: SecretStr | None = None
