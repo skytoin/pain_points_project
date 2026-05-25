@@ -33,10 +33,17 @@ def build_default_registry() -> SourceRegistry:
     from discovery.config.settings import settings  # noqa: PLC0415 — lazy on purpose
     from discovery.sources.hackernews import HackerNewsSource  # noqa: PLC0415
     from discovery.sources.reddit import RedditSource  # noqa: PLC0415
+    from discovery.sources.youtube import YouTubeSource  # noqa: PLC0415
 
+    yt_key = (
+        settings.youtube_api_key.get_secret_value()
+        if settings.youtube_api_key is not None
+        else None
+    )
     adapters: dict[str, BaseSource] = {
         "reddit": RedditSource(user_agent=settings.reddit_user_agent),
         "hackernews": HackerNewsSource(),  # no auth, no UA
+        "youtube": YouTubeSource(api_key=yt_key),
     }
     return adapters
 
