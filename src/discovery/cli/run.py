@@ -1,9 +1,9 @@
-"""`discovery run` — end-to-end: create job, enqueue Reddit + HN, dispatch both.
+"""`discovery run` — end-to-end: create job, enqueue Reddit + HN + YouTube, dispatch all three.
 
 Three phases:
 
 1. **Setup** — create the job, run Wave 0 (LLM query expansion), enqueue
-   both source tasks in one session block. Capture the task ids.
+   all three source tasks in one session block. Capture the task ids.
 2. **Parallel dispatch** — open a fresh session per concurrent branch and
    dispatch via `asyncio.gather`. `AsyncSession` is not safe to share across
    concurrent ops; each branch owns its session exclusively.
@@ -35,6 +35,7 @@ from discovery.jobs import JobSpec, create_job
 from discovery.orchestrator.hackernews import enqueue_hn_task_for_job
 from discovery.orchestrator.jobs import plan_job
 from discovery.orchestrator.reddit import enqueue_reddit_task_for_job
+from discovery.orchestrator.youtube import enqueue_youtube_task_for_job
 from discovery.view import gather_job_detail
 from discovery.workers import (
     SourceRegistry,
@@ -67,7 +68,7 @@ async def _run_discovery(
     )
 
     try:
-        # Phase 1: create the job, run Wave 0 inline, enqueue BOTH
+        # Phase 1: create the job, run Wave 0 inline, enqueue ALL THREE
         # source tasks in one session block. Capture ids for Phase 2.
         async with maker() as session:
             job = await create_job(session, spec)
@@ -78,28 +79,33 @@ async def _run_discovery(
             )
 
             # Wave 0: LLM query expansion via OpenAI gpt-5.4. On
-            # success this populates job.job_plan with three fields
-            # (reddit_queries, reddit_subreddits, hn_queries); on
-            # failure (no API key, LLM error, validation drops too
-            # many queries) job.job_plan stays null and BOTH
-            # orchestrators fall back to their deterministic templates.
+            # success this populates job.job_plan with four fields
+            # (reddit_queries, reddit_subreddits, hn_queries,
+            # youtube_queries); on failure (no API key, LLM error,
+            # validation drops too many queries) job.job_plan stays
+            # null and ALL THREE orchestrators fall back to their
+            # deterministic templates.
             job = await plan_job(session, job)
             plan_status = "planned" if job.job_plan is not None else "fallback"
             console.print(f"[bold]wave 0:[/bold] {plan_status}")
 
             reddit_task = await enqueue_reddit_task_for_job(session, job)
             hn_task = await enqueue_hn_task_for_job(session, job)
+            youtube_task = await enqueue_youtube_task_for_job(session, job)
             console.print(
                 f"[bold]queued tasks:[/bold] "
                 f"reddit={reddit_task.id} "
                 f"(queries={len(reddit_task.params['queries'])}), "
                 f"hackernews={hn_task.id} "
-                f"(queries={len(hn_task.params['queries'])})"
+                f"(queries={len(hn_task.params['queries'])}), "
+                f"youtube={youtube_task.id} "
+                f"(queries={len(youtube_task.params['queries'])})"
             )
 
             job_id = job.id
             reddit_task_id = reddit_task.id
             hn_task_id = hn_task.id
+            youtube_task_id = youtube_task.id
 
         # Phase 2: parallel dispatch by known task id. Each branch
         # opens its own session -- AsyncSession is not safe to share
@@ -107,16 +113,18 @@ async def _run_discovery(
         # per-id (it routes around the single-worker-safe `claim_one`).
         # `run_one` already catches and finalizes adapter failures
         # internally, so partial success across sources is automatic:
-        # if Reddit fails entirely and HN succeeds, the job still
-        # produces HN raw_records (and vice versa).
-        console.print("[bold]running reddit + hackernews concurrently...[/bold]")
+        # if one source fails entirely, the job still produces records
+        # from the other two.
+        console.print("[bold]running reddit + hackernews + youtube concurrently...[/bold]")
         assert reddit_task_id is not None
         assert hn_task_id is not None
+        assert youtube_task_id is not None
         await asyncio.gather(
             _run_task_in_own_session(maker, registry, reddit_task_id),
             _run_task_in_own_session(maker, registry, hn_task_id),
+            _run_task_in_own_session(maker, registry, youtube_task_id),
         )
-        console.print("[bold green]done.[/bold green] 2 task(s) processed.")
+        console.print("[bold green]done.[/bold green] 3 task(s) processed.")
 
         # Phase 3: report. Fresh session for the read-only detail
         # gather (the Phase-1 session was closed after enqueue).
@@ -181,6 +189,6 @@ def run_command(
         ),
     ),
 ) -> None:
-    """Run a discovery slice: create the job, enqueue tasks, run Reddit + HN concurrently."""
+    """Run a discovery slice: create the job, enqueue tasks, run Reddit + HN + YouTube concurrently."""
     anchor = date.today() if as_of == "today" else date.fromisoformat(as_of)
     asyncio.run(_run_discovery(industry, location, size, anchor, time_window))

@@ -58,6 +58,10 @@ class _HNDouble(_RecordingBase):
     name = "hackernews"
 
 
+class _YouTubeDouble(_RecordingBase):
+    name = "youtube"
+
+
 @pytest.fixture
 async def maker() -> AsyncIterator[Any]:
     engine = create_engine_for("sqlite+aiosqlite:///:memory:")
@@ -149,3 +153,26 @@ class TestParallelFanout:
         # Total wall-clock is closer to 50ms (max) than 100ms (sum).
         # 90ms upper bound: well under the 100ms sequential floor.
         assert wall < 0.09, f"wall={wall:.3f}s -- looks sequential"
+
+    async def test_three_tasks_dispatch_concurrently(self, maker: Any) -> None:
+        """Three-way overlap proves Reddit + HN + YouTube all run in
+        parallel via asyncio.gather -- not sequentially."""
+        reddit_id = await _make_queued_task(maker, "reddit")
+        hn_id = await _make_queued_task(maker, "hackernews")
+        yt_id = await _make_queued_task(maker, "youtube")
+
+        started: dict[str, float] = {}
+        registry: dict[str, BaseSource] = {
+            "reddit": _RedditDouble(started, 0.05),
+            "hackernews": _HNDouble(started, 0.05),
+            "youtube": _YouTubeDouble(started, 0.05),
+        }
+        t0 = time.monotonic()
+        await asyncio.gather(
+            _run_task_in_own_session(maker, registry, reddit_id),
+            _run_task_in_own_session(maker, registry, hn_id),
+            _run_task_in_own_session(maker, registry, yt_id),
+        )
+        wall = time.monotonic() - t0
+        assert len(started) == 3
+        assert wall < 0.12, f"wall={wall:.3f}s -- looks sequential"
