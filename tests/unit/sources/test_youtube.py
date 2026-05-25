@@ -12,6 +12,7 @@ from loguru import logger
 from discovery.sources.youtube import (
     CommentsDisabled,
     YouTubeQuotaExceeded,
+    YouTubeRateLimited,
     YouTubeSource,
     build_comments_url,
     build_search_url,
@@ -158,7 +159,7 @@ class TestGetJson:
     async def test_returns_parsed_json_on_200(self) -> None:
         src = _src(lambda _: httpx.Response(200, json={"ok": True}))
         try:
-            assert await src._get_json("https://x/") == {"ok": True}
+            assert await src._get_json("https://x/", kind="search") == {"ok": True}
         finally:
             await src.aclose()
 
@@ -172,7 +173,7 @@ class TestGetJson:
         src = _src(handler)
         try:
             with pytest.raises(YouTubeQuotaExceeded):
-                await src._get_json("https://x/")
+                await src._get_json("https://x/", kind="search")
             assert calls["n"] == 1
         finally:
             await src.aclose()
@@ -181,7 +182,7 @@ class TestGetJson:
         src = _src(lambda _: _error_response(403, "commentsDisabled"))
         try:
             with pytest.raises(CommentsDisabled):
-                await src._get_json("https://x/")
+                await src._get_json("https://x/", kind="search")
         finally:
             await src.aclose()
 
@@ -196,7 +197,7 @@ class TestGetJson:
 
         src = _src(handler)
         try:
-            assert await src._get_json("https://x/") == {"ok": True}
+            assert await src._get_json("https://x/", kind="search") == {"ok": True}
             assert calls["n"] == 2  # retried once
         finally:
             await src.aclose()
@@ -212,8 +213,43 @@ class TestGetJson:
 
         src = _src(handler)
         try:
-            assert await src._get_json("https://x/") == {"ok": True}
+            assert await src._get_json("https://x/", kind="search") == {"ok": True}
             assert calls["n"] == 2
+        finally:
+            await src.aclose()
+
+    async def test_http_429_is_retried_then_succeeds(self) -> None:
+        """A real HTTP 429 (rate-limit) is retryable with backoff, not an
+        immediate failure (spec section 4/10)."""
+        calls = {"n": 0}
+
+        def handler(_: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _error_response(429, "userRateLimitExceeded")
+            return httpx.Response(200, json={"ok": True})
+
+        src = _src(handler)
+        try:
+            assert await src._get_json("https://x/", kind="search") == {"ok": True}
+            assert calls["n"] == 2  # retried once
+        finally:
+            await src.aclose()
+
+    async def test_persistent_rate_limit_raises_youtube_rate_limited(self) -> None:
+        """rateLimitExceeded on every attempt exhausts the budget and
+        raises YouTubeRateLimited (a transient stop the helpers catch)."""
+        calls = {"n": 0}
+
+        def handler(_: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return _error_response(403, "rateLimitExceeded")
+
+        src = _src(handler, max_retries=2)
+        try:
+            with pytest.raises(YouTubeRateLimited):
+                await src._get_json("https://x/", kind="search")
+            assert calls["n"] == 3  # 1 + 2 retries
         finally:
             await src.aclose()
 
@@ -227,7 +263,7 @@ class TestGetJson:
         src = _src(handler, max_retries=2)
         try:
             with pytest.raises(httpx.HTTPStatusError):
-                await src._get_json("https://x/")
+                await src._get_json("https://x/", kind="search")
             assert calls["n"] == 3  # 1 + 2 retries
         finally:
             await src.aclose()
@@ -549,6 +585,130 @@ class TestFetch:
         finally:
             await src.aclose()
 
+    async def test_persistent_rate_limit_on_one_query_is_partial_success(self) -> None:
+        """A query rate-limited on EVERY attempt degrades to a failed query
+        (partial success), not a crash: the other query's records survive."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/search?" in url:
+                q = _single_param(url, "q")
+                if "throttled" in q:
+                    return _error_response(403, "rateLimitExceeded")  # every attempt
+                return httpx.Response(
+                    200,
+                    json={
+                        "items": [{"id": {"kind": "youtube#video", "videoId": "v1"}, "snippet": {}}]
+                    },
+                )
+            if "/videos?" in url:
+                ids = _ids_from_query(url, "id")
+                return httpx.Response(
+                    200,
+                    json={
+                        "items": [
+                            {
+                                "kind": "youtube#video",
+                                "id": v,
+                                "snippet": {},
+                                "statistics": {"viewCount": "1"},
+                            }
+                            for v in ids
+                        ]
+                    },
+                )
+            if "/commentThreads?" in url:
+                vid = _single_param(url, "videoId")
+                return httpx.Response(
+                    200,
+                    json={
+                        "items": [
+                            {
+                                "kind": "youtube#commentThread",
+                                "id": f"{vid}-c",
+                                "snippet": {"videoId": vid},
+                            }
+                        ]
+                    },
+                )
+            return httpx.Response(404)
+
+        src = _src(handler, max_retries=2)
+        try:
+            records = await src.fetch(
+                {
+                    "queries": [
+                        _search_query(query="throttled query"),
+                        _search_query(query="ok query"),
+                    ]
+                }
+            )
+            video_ids = {r.external_id for r in records if r.body.get("kind") == "youtube#video"}
+            assert video_ids == {"v1"}  # ok query's record survived; no crash
+        finally:
+            await src.aclose()
+
+    async def test_enrichment_quota_stop_spans_two_batches(self) -> None:
+        """>50 ids -> enrichment spans 2 batches. Batch 1 enriches; batch 2
+        quota-stops -> youtube#video rows for batch-1 ids, youtube#searchResult
+        fallback ONLY for batch-2 ids, and no comment calls for the latter."""
+        batch1 = [f"a{i}" for i in range(50)]
+        batch2 = [f"b{i}" for i in range(10)]
+        all_ids = batch1 + batch2
+        commented: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/search?" in url:
+                return httpx.Response(
+                    200,
+                    json={
+                        "items": [
+                            {
+                                "kind": "youtube#searchResult",
+                                "id": {"kind": "youtube#video", "videoId": v},
+                                "snippet": {"title": v},
+                            }
+                            for v in all_ids
+                        ]
+                    },
+                )
+            if "/videos?" in url:
+                ids = _ids_from_query(url, "id")
+                if any(i.startswith("b") for i in ids):  # the second batch
+                    return _error_response(403, "quotaExceeded")
+                return httpx.Response(
+                    200,
+                    json={
+                        "items": [
+                            {
+                                "kind": "youtube#video",
+                                "id": v,
+                                "snippet": {},
+                                "statistics": {"viewCount": "1"},
+                            }
+                            for v in ids
+                        ]
+                    },
+                )
+            if "/commentThreads?" in url:
+                commented.append(_single_param(url, "videoId"))
+                return httpx.Response(200, json={"items": []})
+            return httpx.Response(404)
+
+        src = _src(handler)
+        try:
+            records = await src.fetch({"queries": [_search_query()]})
+            video_ids = {r.external_id for r in records if r.body.get("kind") == "youtube#video"}
+            fallback_ids = {
+                r.external_id for r in records if r.body.get("kind") == "youtube#searchResult"
+            }
+            assert video_ids == set(batch1)  # batch 1 enriched verbatim
+            assert fallback_ids == set(batch2)  # batch 2 stored as search hits
+            assert all(c.startswith("a") for c in commented)  # no comments for un-enriched ids
+        finally:
+            await src.aclose()
+
 
 class TestLogging:
     async def test_per_call_log_redacts_key_and_carries_fields(self) -> None:
@@ -570,12 +730,17 @@ class TestLogging:
             finally:
                 await src.aclose()
 
-            call_logs = [c for c in captured_extra if c.get("kind") == "search"]
-            assert call_logs, f"no per-call log line found; captured: {captured_extra}"
-            log = call_logs[0]
-            assert log["count"] == 1
-            assert "key=REDACTED" in log["url"]
-            assert _KEY not in log["url"]
+            # Every HTTP step logs one per-call line carrying kind, redacted
+            # url, status, elapsed_ms, count -- parity with reddit/hackernews.
+            kinds = {c.get("kind") for c in captured_extra if "url" in c}
+            assert {"search", "enrich", "comments"} <= kinds, f"captured: {captured_extra}"
+            for kind in ("search", "enrich", "comments"):
+                log = next(c for c in captured_extra if c.get("kind") == kind)
+                assert log["status"] == 200
+                assert log["elapsed_ms"] >= 0
+                assert "count" in log
+                assert "key=REDACTED" in log["url"]
+                assert _KEY not in log["url"]
             # The raw key must appear in NO captured log line (extra or text).
             assert all(_KEY not in str(c) for c in captured_extra)
             assert all(_KEY not in text for text in captured_text)

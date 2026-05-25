@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlencode
@@ -204,12 +205,13 @@ class YouTubeSource(BaseSource):
         errors: list[Exception] = []
         assert self._api_key is not None
         for q in queries:
+            url = build_search_url(q, self._api_key)
             try:
-                payload = await self._get_json(build_search_url(q, self._api_key))
+                payload = await self._get_json(url, kind="search")
             except YouTubeQuotaExceeded:
                 logger.warning("youtube: quota exhausted during search; stopping early")
                 break
-            except (httpx.HTTPError, ValueError) as exc:
+            except (YouTubeRateLimited, httpx.HTTPError, ValueError) as exc:
                 logger.warning("youtube search failed", query=q, error=str(exc))
                 errors.append(exc)
                 continue
@@ -218,9 +220,6 @@ class YouTubeSource(BaseSource):
                 if vid and vid not in items_by_id:
                     items_by_id[vid] = item
                     ordered.append(str(vid))
-            self._log_call(
-                "search", build_search_url(q, self._api_key), count=len(payload.get("items", []))
-            )
         if not ordered and errors:
             raise errors[0]
         return ordered, items_by_id
@@ -237,13 +236,20 @@ class YouTubeSource(BaseSource):
         for i in range(0, len(ids), VIDEOS_BATCH):
             batch = ids[i : i + VIDEOS_BATCH]
             try:
-                payload = await self._get_json(build_videos_url(batch, self._api_key))
+                payload = await self._get_json(
+                    build_videos_url(batch, self._api_key), kind="enrich"
+                )
             except YouTubeQuotaExceeded:
                 logger.warning("youtube: quota exhausted during enrichment; storing search hits")
                 records.extend(
                     search_hit_to_raw_record(items_by_id[vid]) for vid in ids if vid not in done
                 )
                 return records, enriched
+            except YouTubeRateLimited:
+                # Transient -- keep what enriched so far; NO search-hit
+                # fallback (that is reserved strictly for the quota wall).
+                logger.warning("youtube: rate-limited during enrichment; stopping batches")
+                break
             for video in payload.get("items", []):
                 enriched.append(video)
                 records.append(video_to_raw_record(video))
@@ -259,26 +265,30 @@ class YouTubeSource(BaseSource):
         for video in ranked:
             vid = str(video.get("id"))
             try:
-                payload = await self._get_json(build_comments_url(vid, self._api_key))
+                payload = await self._get_json(
+                    build_comments_url(vid, self._api_key), kind="comments"
+                )
             except CommentsDisabled:
                 logger.debug("youtube: comments disabled, skipping", video_id=vid)
                 continue
             except YouTubeQuotaExceeded:
                 logger.warning("youtube: quota exhausted during comment harvest; stopping")
                 break
+            except YouTubeRateLimited:
+                logger.warning("youtube: rate-limited during comment harvest; stopping")
+                break
             records.extend(comment_to_raw_record(thread) for thread in payload.get("items", []))
         return records
 
-    def _log_call(self, kind: str, url: str, *, count: int) -> None:
-        """Per-call diagnostic; key redacted (never log the key)."""
-        logger.info("youtube call", kind=kind, url=_redact_key(url), count=count)
-
-    async def _get_json(self, url: str) -> dict[str, Any]:
-        """GET with quota-aware retry. Classifies 403 reasons BEFORE the
+    async def _get_json(self, url: str, *, kind: str) -> dict[str, Any]:
+        """GET with quota-aware retry. Classifies 403/429 reasons BEFORE the
         retry decision: quota/commentsDisabled raise immediately; rate-
         limit + 5xx + network errors retry with backoff (5s,10s,20s cap
-        300s). Mirrors RedditSource._fetch_with_retries."""
+        300s). Mirrors RedditSource._fetch_with_retries. Emits one per-call
+        diagnostic line (kind, redacted url, status, elapsed_ms, count) on
+        the accepted response -- parity with reddit.py / hackernews.py."""
         for attempt in range(self._max_retries + 1):
+            started_at = time.monotonic()
             try:
                 async with self._limiter:
                     response = await self._client.get(url)
@@ -291,9 +301,28 @@ class YouTubeSource(BaseSource):
             if retry is None:
                 response.raise_for_status()
                 result: dict[str, Any] = response.json()
+                self._log_call(kind, url, response, started_at, result)
                 return result
             await self._sleep(retry)
         raise RuntimeError("unreachable: retry loop exited")  # pragma: no cover
+
+    @staticmethod
+    def _log_call(
+        kind: str,
+        url: str,
+        response: httpx.Response,
+        started_at: float,
+        payload: dict[str, Any],
+    ) -> None:
+        """Per-call diagnostic; key redacted (never log the key)."""
+        logger.info(
+            "youtube call",
+            kind=kind,
+            url=_redact_key(url),
+            status=response.status_code,
+            elapsed_ms=round((time.monotonic() - started_at) * 1000, 1),
+            count=len(payload.get("items", [])),
+        )
 
     def _classify(self, response: httpx.Response, attempt: int) -> float | None:
         """Return a backoff delay to retry, or None to accept/raise. Raises
@@ -305,13 +334,21 @@ class YouTubeSource(BaseSource):
             if reason == "commentsDisabled":
                 raise CommentsDisabled("commentsDisabled")
             if reason in _RATE_REASONS:
-                if attempt < self._max_retries:
-                    return self._backoff_seconds(attempt)
-                raise YouTubeRateLimited(reason or "rateLimitExceeded")
+                return self._rate_limit_backoff(attempt, reason)
             return None  # other 403 -> non-retryable, raise_for_status handles it
+        if response.status_code == 429:
+            # Spec section 4/10: 429 is rate-limit -> retryable with backoff.
+            return self._rate_limit_backoff(attempt, _reason_of(response))
         if 500 <= response.status_code < 600 and attempt < self._max_retries:
             return self._backoff_seconds(attempt)
         return None
+
+    def _rate_limit_backoff(self, attempt: int, reason: str | None) -> float:
+        """Retry a rate-limited call with backoff, or raise YouTubeRateLimited
+        once the retry budget is spent (a transient, partial-success stop)."""
+        if attempt < self._max_retries:
+            return self._backoff_seconds(attempt)
+        raise YouTubeRateLimited(reason or "rateLimitExceeded")
 
     @staticmethod
     def _backoff_seconds(attempt: int) -> float:
