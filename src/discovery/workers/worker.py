@@ -39,6 +39,13 @@ from discovery.sources.base import BaseSource, RawRecord
 
 SourceRegistry = dict[str, BaseSource]
 
+# SQLite caps host parameters per statement (999 before 3.32, 32766 after).
+# A bulk INSERT of N rows spends N * columns variables, so a high-volume
+# source (YouTube can harvest thousands of video + comment rows in one
+# fetch) overflows the cap unless the insert is chunked. Stay under the
+# strict 999 floor so this holds on every SQLite build, old or new.
+_SQLITE_MAX_VARIABLES = 900
+
 
 async def claim_one(session: AsyncSession) -> Task | None:
     """Atomically claim the next queued task (lowest wave, then oldest).
@@ -246,12 +253,19 @@ async def _persist_records(session: AsyncSession, task: Task, records: list[RawR
         for record in records
     ]
 
-    stmt = sqlite_insert(RawRecordRow).values(rows)
-    stmt = stmt.on_conflict_do_nothing(index_elements=["source", "external_id"])
-    # `session.exec()` is SQLModel's typed wrapper; it works for INSERTs too.
-    # Plain `session.execute()` triggers a SQLModel deprecation warning that
-    # pyproject's `filterwarnings = ["error"]` would turn into a test failure.
-    await session.exec(stmt)
+    # Chunk the insert so a large `records` list never exceeds SQLite's
+    # per-statement variable cap (see `_SQLITE_MAX_VARIABLES`). Each row
+    # spends one variable per column. Within one (uncommitted)
+    # transaction, ON CONFLICT still dedupes across chunks because earlier
+    # chunks' rows are visible to later ones on the same connection.
+    batch_size = max(1, _SQLITE_MAX_VARIABLES // len(rows[0]))
+    for start in range(0, len(rows), batch_size):
+        stmt = sqlite_insert(RawRecordRow).values(rows[start : start + batch_size])
+        stmt = stmt.on_conflict_do_nothing(index_elements=["source", "external_id"])
+        # `session.exec()` is SQLModel's typed wrapper; it works for INSERTs too.
+        # Plain `session.execute()` triggers a SQLModel deprecation warning that
+        # pyproject's `filterwarnings = ["error"]` would turn into a test failure.
+        await session.exec(stmt)
 
 
 async def _finalize_failure(

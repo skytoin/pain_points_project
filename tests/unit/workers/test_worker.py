@@ -254,6 +254,32 @@ class TestRunOne:
         rows = list(result.all())
         assert len(rows) == 1
 
+    async def test_persists_large_batch_exceeding_sqlite_var_limit(
+        self, session: AsyncSession
+    ) -> None:
+        """A high-volume source must persist ALL its records.
+
+        SQLite caps host parameters per statement (999 pre-3.32, 32766
+        after). One bulk INSERT of N rows uses N*columns variables, so a
+        source that returns thousands of records (YouTube harvests up to
+        ~5000 video + comment rows) blows the cap unless the insert is
+        chunked. Regression test for the 'too many SQL variables' failure
+        that silently dropped every YouTube record.
+        """
+        job = await _make_job(session)
+        await _queue_task(session, job.id, source="fake")
+        task = await claim_one(session)
+        assert task is not None
+
+        records = [_record(f"ext-{i}") for i in range(5000)]
+        registry: SourceRegistry = {"fake": FakeSource(records)}
+        await run_one(session, registry, task)
+
+        result = await session.exec(select(RawRecordRow))
+        assert len(list(result.all())) == 5000
+        await session.refresh(task)
+        assert task.status == TaskStatus.done
+
     async def test_requeues_on_failure_when_attempts_remaining(self, session: AsyncSession) -> None:
         """A failure with attempts < max_attempts goes back to queued."""
         job = await _make_job(session)
