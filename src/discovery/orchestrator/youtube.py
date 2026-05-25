@@ -127,3 +127,77 @@ def youtube_queries_for_spec(spec: JobSpec) -> list[dict[str, Any]]:
         ),
     ]
     return _compile_yt_queries(candidates, spec)
+
+
+def _queries_from_job_plan(job: Job) -> list[dict[str, Any]] | None:
+    """Extract compiled YouTube queries from a populated `job_plan`, or
+    return None to signal 'use the template instead.'
+
+    Returns:
+    - `None`  when `job.job_plan` is null OR fails JobPlan validation
+      (template fallback signal).
+    - `[]`    when `job_plan` is valid but `youtube_queries` is empty (LLM
+      intentionally emitted nothing -- graceful sparsity; do NOT fall
+      back to template).
+    - `[...]` when `youtube_queries` is non-empty (compile pipeline applied).
+    """
+    if job.job_plan is None:
+        return None
+    try:
+        plan = JobPlan.model_validate(job.job_plan)
+    except Exception as e:
+        logger.warning(
+            "job {} job_plan fails validation ({}); YouTube template fallback.",
+            job.id,
+            e,
+        )
+        return None
+    spec = JobSpec.model_validate(job.spec)
+    return _compile_yt_queries(plan.youtube_queries, spec)
+
+
+async def enqueue_youtube_task_for_job(session: AsyncSession, job: Job) -> Task:
+    """Queue one YouTube fetch task for `job`. Idempotent on `content_hash`.
+
+    Query source priority:
+
+    1. `job.job_plan["youtube_queries"]` (Wave 0 LLM output), compiled.
+    2. `youtube_queries_for_spec(spec)` -- the deterministic template --
+       when Wave 0 didn't run or its plan failed validation.
+
+    An empty compiled list is intentional (graceful YouTube sparsity) and
+    DOES enqueue a task; the task runs, fetches zero records, and completes
+    `done`. Mirrors `orchestrator.hackernews.enqueue_hn_task_for_job`.
+    """
+    spec = JobSpec.model_validate(job.spec)
+    queries = _queries_from_job_plan(job)
+    if queries is None:
+        # Note: `is None`, not `or` -- an empty `youtube_queries` from the LLM
+        # is a valid output (graceful sparsity); only a missing or invalid
+        # job_plan triggers the template fallback.
+        queries = youtube_queries_for_spec(spec)
+    params: dict[str, Any] = {"queries": queries}
+    content_hash = hash_params({"source": "youtube", "action": "fetch", "params": params})
+
+    existing = await session.exec(
+        select(Task).where(
+            Task.job_id == job.id,
+            Task.content_hash == content_hash,
+        )
+    )
+    task = existing.first()
+    if task is not None:
+        return task
+
+    task = Task(
+        job_id=job.id,
+        wave=1,
+        source="youtube",
+        action="fetch",
+        params=params,
+        content_hash=content_hash,
+    )
+    session.add(task)
+    await session.commit()
+    await session.refresh(task)
+    return task
