@@ -41,6 +41,7 @@ from discovery.llm.schemas import (
     JobPlan,
     RedditQuerySpec,
     SubredditSearchPhrases,
+    YouTubeQuerySpec,
 )
 from discovery.llm.stations.subreddit_selection import (
     dedupe_and_count,
@@ -98,9 +99,12 @@ async def run_query_expansion(spec: JobSpec) -> JobPlan:
     raw_plan = await _select_and_design(spec, candidates)
 
     hn_queries = list(raw_plan.hn_queries)  # capture once
+    youtube_queries = list(raw_plan.youtube_queries)  # capture once
     grounded = _ground_selection(raw_plan, candidates)
     final_plan = _finalize(grounded, spec)
-    final_plan = _attach_hn_queries(final_plan, hn_queries)  # restore once
+    final_plan = _attach_extra_source_queries(  # reattach both once
+        final_plan, hn_queries=hn_queries, youtube_queries=youtube_queries
+    )
     put_cached(_cache, key, final_plan)
     return final_plan
 
@@ -247,27 +251,42 @@ def _drop_invalid_queries(plan: JobPlan) -> JobPlan:
     )
 
 
-def _attach_hn_queries(plan: JobPlan, hn_queries: list[HackerNewsKeywordSpec]) -> JobPlan:
-    """Single point that re-attaches `hn_queries` to a post-tail plan.
+def _attach_extra_source_queries(
+    plan: JobPlan,
+    *,
+    hn_queries: list[HackerNewsKeywordSpec],
+    youtube_queries: list[YouTubeQuerySpec],
+) -> JobPlan:
+    """Re-attach every non-Reddit source field to a post-tail plan in ONE
+    `model_construct`.
 
     The locked Reddit tail (`_ground_selection`, `_force_time_window`,
     `_merge_baseline_subreddits`, `_drop_invalid_queries`) uses
     `JobPlan.model_construct(reddit_queries=..., reddit_subreddits=...)`
     at four sites and silently drops any non-Reddit fields. This helper
-    is the carry-through: capture `hn_queries` once at the top of
-    `run_query_expansion` (right after `_select_and_design`), let the
-    locked tail run untouched, then call this helper exactly once to
-    restore them before caching.
+    is the single carry-through point: capture `hn_queries` AND
+    `youtube_queries` once at the top of `run_query_expansion` (right
+    after `_select_and_design`), let the locked tail run untouched, then
+    call this helper exactly once to restore them before caching.
+
+    Reattaching all non-Reddit fields in ONE `model_construct` is
+    mandatory: two single-field helpers cannot be chained, because the
+    second `model_construct` keeps only the fields passed and re-drops
+    the first helper's field.
 
     Uses `model_construct` (skips validation) so the post-pruning
     Reddit fields -- which may be below the 25-30 band after
     `_drop_invalid_queries` -- still survive. The "too few survived"
     case is already enforced inside `_finalize`.
 
-    See `docs/specs/2026-05-20-hackernews-source-design.md` §6.
+    INVARIANT: any new non-Reddit source field added to `JobPlan` MUST be
+    threaded through here (capture once in `run_query_expansion`, reattach
+    once). The four locked tail helpers stay byte-for-byte Reddit-only.
+    See `docs/specs/2026-05-22-youtube-source-design.md` §6.
     """
     return JobPlan.model_construct(
         reddit_queries=plan.reddit_queries,
         reddit_subreddits=plan.reddit_subreddits,
         hn_queries=hn_queries,
+        youtube_queries=youtube_queries,
     )

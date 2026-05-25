@@ -26,12 +26,13 @@ from discovery.llm.schemas import (
     JobPlan,
     RedditQuerySpec,
     SubredditSearchPhrases,
+    YouTubeQuerySpec,
 )
 from discovery.llm.stations import query_expansion as station
 from discovery.llm.stations.query_expansion import (
     MODEL,
     QueryExpansionError,
-    _attach_hn_queries,
+    _attach_extra_source_queries,
     run_query_expansion,
 )
 from discovery.sources.reddit_subreddits import PhraseResult, SubredditCandidate
@@ -313,31 +314,59 @@ def _hn_kw(keyword: str = "CRM CLI", intent: str = "launch") -> HackerNewsKeywor
     )
 
 
-class TestAttachHnQueries:
-    """The locked tail's `model_construct` rebuilds drop `hn_queries`.
-    `_attach_hn_queries` is the single point that restores them. The
-    helper itself must be a pure restore -- no validation, no mutation
-    of the plan's Reddit fields.
+def _yt_q(query: str = "why I quit x", intent: str = "complaint") -> YouTubeQuerySpec:
+    return YouTubeQuerySpec(
+        query=query,
+        intent=intent,  # type: ignore[arg-type]
+        rationale="test rationale",
+    )
+
+
+def test_attach_extra_source_queries_preserves_both_fields() -> None:
+    """The single generalized carry-through must reattach BOTH non-Reddit
+    fields in one model_construct -- the trap being that two single-field
+    helpers would re-drop each other's field. Spec section 6."""
+    # Simulate a post-tail plan: model_construct with ONLY reddit fields
+    # (the locked tail drops non-reddit fields).
+    post_tail = JobPlan.model_construct(reddit_queries=[], reddit_subreddits=["startups"])
+    hn = [_hn_kw("CRM CLI")]
+    yt = [_yt_q("why I quit x")]
+
+    out = _attach_extra_source_queries(post_tail, hn_queries=hn, youtube_queries=yt)
+
+    assert out.reddit_subreddits == ["startups"]
+    assert len(out.hn_queries) == 1
+    assert len(out.youtube_queries) == 1
+
+
+class TestAttachExtraSourceQueries:
+    """The locked tail's `model_construct` rebuilds drop every non-Reddit
+    field. `_attach_extra_source_queries` is the single point that restores
+    them ALL in one model_construct. The helper itself must be a pure
+    restore -- no validation, no mutation of the plan's Reddit fields.
     """
 
-    def test_attaches_hn_to_a_post_tail_plan(self) -> None:
+    def test_attaches_both_to_a_post_tail_plan(self) -> None:
         post_tail = JobPlan.model_construct(
             reddit_queries=[_query("q1")],
             reddit_subreddits=["startups"],
         )
         assert post_tail.hn_queries == []
+        assert post_tail.youtube_queries == []
 
         hn = [_hn_kw("CRM CLI"), _hn_kw("CRM founder", intent="context")]
-        final = _attach_hn_queries(post_tail, hn)
+        yt = [_yt_q("why I quit x"), _yt_q("x vs y", intent="discussion")]
+        final = _attach_extra_source_queries(post_tail, hn_queries=hn, youtube_queries=yt)
 
         assert final.hn_queries == hn
+        assert final.youtube_queries == yt
 
     def test_preserves_reddit_fields_unchanged(self) -> None:
         post_tail = JobPlan.model_construct(
             reddit_queries=[_query("q1"), _query("q2")],
             reddit_subreddits=["a", "b", "c"],
         )
-        final = _attach_hn_queries(post_tail, [_hn_kw()])
+        final = _attach_extra_source_queries(post_tail, hn_queries=[_hn_kw()], youtube_queries=[])
 
         assert final.reddit_queries == post_tail.reddit_queries
         assert final.reddit_subreddits == ["a", "b", "c"]
@@ -351,18 +380,22 @@ class TestAttachHnQueries:
             reddit_queries=[_query("q1")],
             reddit_subreddits=[],
         )
-        final = _attach_hn_queries(below_band, [_hn_kw()])
+        final = _attach_extra_source_queries(
+            below_band, hn_queries=[_hn_kw()], youtube_queries=[_yt_q()]
+        )
 
         assert len(final.reddit_queries) == 1
         assert len(final.hn_queries) == 1
+        assert len(final.youtube_queries) == 1
 
-    def test_empty_hn_list_yields_empty_hn_queries(self) -> None:
+    def test_empty_lists_yield_empty_fields(self) -> None:
         post_tail = JobPlan.model_construct(
             reddit_queries=[_query("q1")],
             reddit_subreddits=[],
         )
-        final = _attach_hn_queries(post_tail, [])
+        final = _attach_extra_source_queries(post_tail, hn_queries=[], youtube_queries=[])
         assert final.hn_queries == []
+        assert final.youtube_queries == []
 
 
 class TestRunQueryExpansionCarriesHnQueries:
@@ -386,10 +419,12 @@ class TestRunQueryExpansionCarriesHnQueries:
             _hn_kw("CRM CLI", intent="launch"),
             _hn_kw("CRM founder", intent="context"),
         ]
+        yt = [_yt_q("why I quit cleaning"), _yt_q("cleaning vs x", intent="discussion")]
         emitted = JobPlan(
             reddit_queries=[_query(f"q{i}") for i in range(28)],
             reddit_subreddits=["startups"],
             hn_queries=hn,
+            youtube_queries=yt,
         )
 
         monkeypatch.setattr(station, "call_openai", _make_call_openai(emitted))
@@ -398,6 +433,7 @@ class TestRunQueryExpansionCarriesHnQueries:
         final = await run_query_expansion(spec)
 
         assert final.hn_queries == hn
+        assert final.youtube_queries == yt
 
     async def test_run_with_empty_hn_queries_still_runs_clean(
         self,
