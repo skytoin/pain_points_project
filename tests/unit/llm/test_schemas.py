@@ -290,3 +290,10 @@ class TestJobPlanYoutubeQueries:
         )
         assert len(plan.hn_queries) == 1
         assert len(plan.youtube_queries) == 1
+
+    def test_youtube_queries_round_trips_through_model_dump(self) -> None:
+        spec = YouTubeQuerySpec(query="why I quit landscaping", intent="complaint", rationale="r")
+        plan = JobPlan(reddit_queries=_make_reddit_queries(), youtube_queries=[spec])
+        restored = JobPlan.model_validate(plan.model_dump())
+        assert len(restored.youtube_queries) == 1
+        assert restored.youtube_queries[0] == spec

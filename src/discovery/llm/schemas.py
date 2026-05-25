@@ -119,7 +119,7 @@ class YouTubeQuerySpec(BaseModel):
     """Wave 0 LLM YouTube search candidate. Python downstream normalizes,
     dedupes, applies the time-window publishedAfter floor, caps at
     MAX_YT_QUERIES, and runs the three-step fetch. See
-    `docs/specs/2026-05-22-youtube-source-design.md` sections 7-10.
+    `docs/specs/2026-05-22-youtube-source-design.md` sections 8-10.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -142,7 +142,7 @@ class YouTubeQuerySpec(BaseModel):
             "-> the pain is in the comments and the video reveals "
             "tools/workflows (tutorials, tips, reviews, A-vs-B, "
             "day-in-the-life). Used for LLM generation balance and "
-            "downstream tagging; does NOT route API params."
+            "downstream Wave 2 tagging; does NOT route API params."
         ),
     )
     rationale: str = Field(

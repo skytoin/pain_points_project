@@ -55,11 +55,12 @@ class TestDatabaseUrl:
         assert s.database_url == "sqlite+aiosqlite:///custom.db"
 
 
-def test_youtube_api_key_defaults_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    s = Settings(_env_file=None)  # type: ignore[call-arg]
-    assert s.youtube_api_key is None
+class TestYouTubeApiKey:
+    def test_youtube_api_key_defaults_to_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.youtube_api_key is None
 
 
 class TestFindProjectRoot:
