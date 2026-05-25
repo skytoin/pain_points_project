@@ -15,6 +15,7 @@ from discovery.jobs import JobSpec
 from discovery.llm.schemas import JobPlan, RedditQuerySpec, YouTubeQuerySpec
 from discovery.orchestrator.youtube import (
     MAX_YT_QUERIES,
+    _compile_yt_queries,
     _time_window_rfc3339,
 )
 
@@ -103,3 +104,39 @@ class TestTimeWindowRfc3339:
     def test_unknown_window_raises(self) -> None:
         with pytest.raises(ValueError, match="unknown time window"):
             _time_window_rfc3339("decade", date(2026, 5, 22))
+
+
+# ---------------------------------------------------------------------------
+# Task 3.2: TestCompileYtQueries
+# ---------------------------------------------------------------------------
+
+
+class TestCompileYtQueries:
+    def test_normalizes_and_strips(self) -> None:
+        out = _compile_yt_queries([_yt("  why  I quit  cleaning ")], _spec())
+        assert out[0]["query"] == "why I quit cleaning"
+
+    def test_dedups_case_insensitively(self) -> None:
+        out = _compile_yt_queries([_yt("Why I Quit"), _yt("why i quit")], _spec())
+        assert len(out) == 1
+
+    def test_caps_at_max_preserving_order(self) -> None:
+        out = _compile_yt_queries([_yt(f"q{i} x") for i in range(20)], _spec())
+        assert len(out) == MAX_YT_QUERIES == 10
+        assert out[0]["query"] == "q0 x"
+        assert out[9]["query"] == "q9 x"
+
+    def test_published_after_present_for_month(self) -> None:
+        out = _compile_yt_queries([_yt("x")], _spec(time_window="month"))
+        assert out[0]["published_after"] == "2026-04-22T00:00:00Z"
+
+    def test_published_after_none_for_all(self) -> None:
+        out = _compile_yt_queries([_yt("x")], _spec(time_window="all"))
+        assert out[0]["published_after"] is None
+
+    def test_constant_fields(self) -> None:
+        out = _compile_yt_queries([_yt("x")], _spec())
+        assert out[0]["order"] == "relevance"
+        assert out[0]["type"] == "video"
+        assert out[0]["part"] == "snippet"
+        assert out[0]["max_results"] == 50

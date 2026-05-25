@@ -50,3 +50,44 @@ def _time_window_rfc3339(time_window: str, as_of: date) -> str | None:
     anchor = datetime.combine(as_of, time.min, tzinfo=UTC)
     floor = anchor - timedelta(seconds=_TIME_WINDOW_SECONDS[time_window])
     return floor.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _normalize_query(query: str) -> str:
+    """Collapse internal whitespace and strip leading/trailing space."""
+    return " ".join(query.split())
+
+
+def _build_fetch_params(query: str, published_after: str | None) -> dict[str, Any]:
+    """Assemble the per-query dict the YouTube adapter consumes (spec SS10)."""
+    return {
+        "query": query,
+        "order": "relevance",
+        "type": "video",
+        "part": "snippet",
+        "published_after": published_after,
+        "max_results": 50,
+    }
+
+
+def _compile_yt_queries(
+    specs: Iterable[YouTubeQuerySpec], job_spec: JobSpec
+) -> list[dict[str, Any]]:
+    """Normalize -> dedup (case-insensitive) -> publishedAfter -> cap.
+    Preserves the LLM's emission order (a ranking signal). No token
+    decomposition (YouTube is full-text relevance, not token-AND).
+    """
+    published_after = _time_window_rfc3339(job_spec.time_window, job_spec.as_of)
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for spec in specs:
+        query = _normalize_query(spec.query)
+        if not query:
+            continue
+        key = query.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(_build_fetch_params(query, published_after))
+        if len(out) >= MAX_YT_QUERIES:
+            break
+    return out
