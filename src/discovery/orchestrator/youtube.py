@@ -30,8 +30,8 @@ _TIME_WINDOW_SECONDS: dict[str, int] = {
     "hour": 3_600,
     "day": 86_400,
     "week": 604_800,
-    "month": 30 * 86_400,
-    "year": 365 * 86_400,
+    "month": 30 * 86_400,  # 2,592,000
+    "year": 365 * 86_400,  # 31,536,000
 }
 
 
@@ -53,12 +53,16 @@ def _time_window_rfc3339(time_window: str, as_of: date) -> str | None:
 
 
 def _normalize_query(query: str) -> str:
-    """Collapse internal whitespace and strip leading/trailing space."""
+    """Whitespace-only normalization: collapse internal whitespace runs and
+    strip leading/trailing space. Does NOT lowercase -- the emitted query is
+    sent near-verbatim to YouTube. Case-insensitive dedup happens separately
+    in `_compile_yt_queries` via a lowercased dedup key, leaving the original
+    casing intact in the output."""
     return " ".join(query.split())
 
 
 def _build_fetch_params(query: str, published_after: str | None) -> dict[str, Any]:
-    """Assemble the per-query dict the YouTube adapter consumes (spec SS10)."""
+    """Assemble the per-query dict the YouTube adapter consumes (spec §10)."""
     return {
         "query": query,
         "order": "relevance",
@@ -147,7 +151,7 @@ def _queries_from_job_plan(job: Job) -> list[dict[str, Any]] | None:
         plan = JobPlan.model_validate(job.job_plan)
     except Exception as e:
         logger.warning(
-            "job {} job_plan fails validation ({}); YouTube template fallback.",
+            "job {} has a job_plan that fails validation ({}); falling back to YouTube template.",
             job.id,
             e,
         )

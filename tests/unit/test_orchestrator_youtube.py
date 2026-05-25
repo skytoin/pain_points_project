@@ -40,7 +40,7 @@ async def session() -> AsyncIterator[AsyncSession]:
 
 
 def _make_reddit_queries(n: int = 25) -> list[RedditQuerySpec]:
-    """25 valid RedditQuerySpec to satisfy JobPlan's 25-30 band."""
+    """n valid RedditQuerySpec (default 25) to satisfy JobPlan's 25-30 band."""
     return [
         RedditQuerySpec(
             endpoint="site_wide",
@@ -143,6 +143,15 @@ class TestCompileYtQueries:
         assert out[0]["type"] == "video"
         assert out[0]["part"] == "snippet"
         assert out[0]["max_results"] == 50
+
+    def test_empty_specs_returns_empty_list(self) -> None:
+        assert _compile_yt_queries([], _spec()) == []
+
+    def test_drops_whitespace_only_query(self) -> None:
+        # "  " passes YouTubeQuerySpec min_length=1 but normalizes to empty.
+        out = _compile_yt_queries([_yt("  "), _yt("why I quit")], _spec())
+        assert len(out) == 1
+        assert out[0]["query"] == "why I quit"
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +282,9 @@ class TestEnqueueYoutubeTaskForJob:
 
         assert task_a.id == task_b.id
 
-    async def test_task_source_is_youtube(self, session: AsyncSession) -> None:
+    async def test_template_path_sets_wave_and_action(self, session: AsyncSession) -> None:
+        """The template (null job_plan) path also stamps wave=1 / action=fetch
+        (the compiled-plan path asserts action; this covers wave on both)."""
         job = _make_job(job_plan=None)
         session.add(job)
         await session.commit()
@@ -281,5 +292,5 @@ class TestEnqueueYoutubeTaskForJob:
 
         task = await enqueue_youtube_task_for_job(session, job)
 
-        assert task.source == "youtube"
+        assert task.action == "fetch"
         assert task.wave == 1
