@@ -16,12 +16,14 @@ quotaExceeded (never retry into the wall).
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlencode
 
 import httpx
 from aiolimiter import AsyncLimiter
+from loguru import logger
 
 from discovery.sources.base import BaseSource, RawRecord
 
@@ -51,6 +53,9 @@ class CommentsDisabled(Exception):  # noqa: N818
     """commentThreads.list 403 commentsDisabled. Per-video skip."""
 
 
+_KEY_PARAM_RE = re.compile(r"(key=)[^&]*")
+
+
 def _reason_of(response: httpx.Response) -> str | None:
     """Read error.errors[0].reason from a JSON error body; None if absent."""
     try:
@@ -58,6 +63,12 @@ def _reason_of(response: httpx.Response) -> str | None:
     except (ValueError, AttributeError):
         return None
     return errors[0].get("reason") if errors else None
+
+
+def _redact_key(url: str) -> str:
+    """Replace the `key=` query value with REDACTED so the API key never
+    appears in any log line."""
+    return _KEY_PARAM_RE.sub(r"\1REDACTED", url)
 
 
 def build_search_url(query: dict[str, Any], api_key: str) -> str:
@@ -170,9 +181,97 @@ class YouTubeSource(BaseSource):
         self._max_retries = max_retries
 
     async def fetch(self, params: dict[str, Any]) -> list[RawRecord]:
-        """Three-step fetch. Fully implemented in Task 2.4; this shell
-        satisfies the BaseSource abstract method for Task 2.3."""
-        raise NotImplementedError(str(params))  # pragma: no cover
+        """Three-step fetch (search -> enrich -> comments). Thin orchestrator
+        over the three named helpers. No-op (zero HTTP calls) when no key."""
+        if self._api_key is None:
+            logger.warning("youtube: no API key configured; skipping (0 records)")
+            return []
+        ids, items_by_id = await self._search_all(params.get("queries", []))
+        if not ids:
+            return []
+        video_records, enriched = await self._enrich_videos(ids, items_by_id)
+        comment_records = await self._harvest_comments(enriched)
+        return video_records + comment_records
+
+    async def _search_all(
+        self, queries: list[dict[str, Any]]
+    ) -> tuple[list[str], dict[str, dict[str, Any]]]:
+        """Run search.list per query. Returns (ordered unique videoIds,
+        items_by_id). Stops on quota; partial success otherwise. Raises
+        the first error only when nothing was gathered and all errored."""
+        ordered: list[str] = []
+        items_by_id: dict[str, dict[str, Any]] = {}
+        errors: list[Exception] = []
+        assert self._api_key is not None
+        for q in queries:
+            try:
+                payload = await self._get_json(build_search_url(q, self._api_key))
+            except YouTubeQuotaExceeded:
+                logger.warning("youtube: quota exhausted during search; stopping early")
+                break
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.warning("youtube search failed", query=q, error=str(exc))
+                errors.append(exc)
+                continue
+            for item in payload.get("items", []):
+                vid = item.get("id", {}).get("videoId")
+                if vid and vid not in items_by_id:
+                    items_by_id[vid] = item
+                    ordered.append(str(vid))
+            self._log_call(
+                "search", build_search_url(q, self._api_key), count=len(payload.get("items", []))
+            )
+        if not ordered and errors:
+            raise errors[0]
+        return ordered, items_by_id
+
+    async def _enrich_videos(
+        self, ids: list[str], items_by_id: dict[str, dict[str, Any]]
+    ) -> tuple[list[RawRecord], list[dict[str, Any]]]:
+        """Batch ids into videos.list. On quota-stop, emit search-hit
+        fallback records for the un-enriched ids."""
+        records: list[RawRecord] = []
+        enriched: list[dict[str, Any]] = []
+        assert self._api_key is not None
+        done: set[str] = set()
+        for i in range(0, len(ids), VIDEOS_BATCH):
+            batch = ids[i : i + VIDEOS_BATCH]
+            try:
+                payload = await self._get_json(build_videos_url(batch, self._api_key))
+            except YouTubeQuotaExceeded:
+                logger.warning("youtube: quota exhausted during enrichment; storing search hits")
+                records.extend(
+                    search_hit_to_raw_record(items_by_id[vid]) for vid in ids if vid not in done
+                )
+                return records, enriched
+            for video in payload.get("items", []):
+                enriched.append(video)
+                records.append(video_to_raw_record(video))
+                done.add(str(video.get("id")))
+        return records, enriched
+
+    async def _harvest_comments(self, enriched: list[dict[str, Any]]) -> list[RawRecord]:
+        """commentThreads.list for the top COMMENT_TOP_K videos by view
+        count. Skips commentsDisabled videos; stops on quota."""
+        records: list[RawRecord] = []
+        assert self._api_key is not None
+        ranked = sorted(enriched, key=viewcount_of, reverse=True)[:COMMENT_TOP_K]
+        for video in ranked:
+            vid = str(video.get("id"))
+            try:
+                payload = await self._get_json(build_comments_url(vid, self._api_key))
+            except CommentsDisabled:
+                logger.debug("youtube: comments disabled, skipping", video_id=vid)
+                continue
+            except YouTubeQuotaExceeded:
+                logger.warning("youtube: quota exhausted during comment harvest; stopping")
+                break
+            records.extend(comment_to_raw_record(thread) for thread in payload.get("items", []))
+        return records
+
+    def _log_call(self, kind: str, url: str, *, count: int) -> None:
+        """Per-call diagnostic; key redacted (never log the key)."""
+        logger.info("youtube call", kind=kind, url=_redact_key(url), count=count)
 
     async def _get_json(self, url: str) -> dict[str, Any]:
         """GET with quota-aware retry. Classifies 403 reasons BEFORE the
