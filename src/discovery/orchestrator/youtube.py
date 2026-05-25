@@ -91,3 +91,39 @@ def _compile_yt_queries(
         if len(out) >= MAX_YT_QUERIES:
             break
     return out
+
+
+def youtube_queries_for_spec(spec: JobSpec) -> list[dict[str, Any]]:
+    """Deterministic no-LLM fallback -- pain-shaped phrases off the
+    industry literal. Used when job_plan is null/invalid. Same compile
+    path as the LLM output. Mirrors hn_keyword_candidates_for_spec.
+    """
+    industry = spec.industry
+    candidates = [
+        YouTubeQuerySpec(
+            query=f"why I quit {industry}",
+            intent="complaint",
+            rationale="(template) quit-the-industry pain monologue",
+        ),
+        YouTubeQuerySpec(
+            query=f"{industry} horror stories",
+            intent="complaint",
+            rationale="(template) compiled pain across many people",
+        ),
+        YouTubeQuerySpec(
+            query=f"things nobody tells you about {industry}",
+            intent="complaint",
+            rationale="(template) retrospective pain",
+        ),
+        YouTubeQuerySpec(
+            query=f"{industry} tutorial",
+            intent="discussion",
+            rationale="(template) comments hold this breaks for me pain",
+        ),
+        YouTubeQuerySpec(
+            query=f"day in the life {industry}",
+            intent="discussion",
+            rationale="(template) visible workflow friction",
+        ),
+    ]
+    return _compile_yt_queries(candidates, spec)

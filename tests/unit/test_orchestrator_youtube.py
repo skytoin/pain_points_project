@@ -17,6 +17,7 @@ from discovery.orchestrator.youtube import (
     MAX_YT_QUERIES,
     _compile_yt_queries,
     _time_window_rfc3339,
+    youtube_queries_for_spec,
 )
 
 
@@ -140,3 +141,23 @@ class TestCompileYtQueries:
         assert out[0]["type"] == "video"
         assert out[0]["part"] == "snippet"
         assert out[0]["max_results"] == 50
+
+
+# ---------------------------------------------------------------------------
+# Task 3.3: TestYoutubeQueriesForSpec
+# ---------------------------------------------------------------------------
+
+
+class TestYoutubeQueriesForSpec:
+    def test_returns_compiled_queries(self) -> None:
+        out = youtube_queries_for_spec(_spec(industry="cleaning"))
+        assert 1 <= len(out) <= MAX_YT_QUERIES
+        assert any("quit" in q["query"] for q in out)
+
+    def test_each_carries_published_after(self) -> None:
+        out = youtube_queries_for_spec(_spec(industry="cleaning", time_window="year"))
+        assert all(q["published_after"] == "2025-05-22T00:00:00Z" for q in out)
+
+    def test_deterministic(self) -> None:
+        s = _spec(industry="cleaning")
+        assert youtube_queries_for_spec(s) == youtube_queries_for_spec(s)
