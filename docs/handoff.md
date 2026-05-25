@@ -1,12 +1,10 @@
 # Session handoff — discovery pipeline
 
-**Last touched:** 2026-05-21
-**Branch:** `claude/thirsty-lederberg-f91c6d`. The **subreddit-discovery
-slice** and **wider query-band slice** were merged to `main`. On top of
-that, this branch now carries the **HackerNews source adapter slice**
-(Wave 1 second source: Reddit + HN fan-out, prompt v6, `discovery work`
-drain loop) — not yet merged. See the dated "what shipped" sections
-below, newest first.
+**Last touched:** 2026-05-24
+**Branch:** `main`. All slices through the **YouTube source adapter** are
+merged. The pipeline now fans out to Reddit + HackerNews + YouTube
+concurrently (three-way gather, prompt v8, `3 task(s) processed`). See
+the dated "what shipped" sections below, newest first.
 
 Read this first when picking the project back up. It tells you what
 exists, what decisions are locked in, and exactly where the next slice
@@ -35,9 +33,9 @@ $ uv run python -m discovery.cli.init_db          # one-time DB setup
 $ uv run discovery run --industry "commercial cleaning" --location NY
 job: 1  (spec_hash a4c1be3f1d2b…, status queued)
 wave 0: planned             # ← LLM hit OpenAI gpt-5.4 (or "fallback")
-queued task: 1  (source=reddit, queries=12)
-  ✓ processed task 1
-done. 1 task(s) processed.
+queued tasks: reddit=1 (queries=12), hackernews=2 (queries=8), youtube=3 (queries=10)
+running reddit + hackernews + youtube concurrently...
+done. 3 task(s) processed.
 ```
 
 After running, `data/discovery.db`'s `raw_records` table holds real
@@ -138,12 +136,14 @@ src/discovery/
 │   └── reddit_query_validator.py # pure validator for LLM-built queries
 ├── sources/
 │   ├── base.py                  # BaseSource ABC + RawRecord Pydantic DTO
-│   └── reddit.py                # RedditSource (anonymous .json endpoint)
+│   ├── reddit.py                # RedditSource (anonymous .json endpoint)
+│   ├── hackernews.py            # HackerNewsSource (Algolia, no auth)
+│   └── youtube.py               # YouTubeSource (Data API v3, quota-aware)
 ├── workers/
 │   ├── __init__.py              # build_default_registry() + public surface
 │   └── worker.py                # claim_one, run_one, run_worker_once, sweep_stuck_tasks
 ├── normalizers/                 # empty — Wave 2 lives here later
-└── (no orchestrator/__init__.py for other sources yet)
+└── (no orchestrator/__init__.py yet)
 
 migrations/versions/eade55a73c8f_initial_schema_*.py   # 4 tables
 .claude/skills/
@@ -239,6 +239,10 @@ Read them before touching the relevant code path:
 - **`source-adapter`** — every file under `src/discovery/sources/`.
 - **`reddit-source`** — anything touching `src/discovery/sources/reddit.py`
   or planning Reddit queries from a `JobPlan`.
+- **`hackernews-source`** -- anything touching `src/discovery/sources/hackernews.py`
+  or planning HN queries.
+- **`youtube-source`** -- anything touching `src/discovery/sources/youtube.py`
+  or planning YouTube queries.
 - **`llm-station`** — every LLM call site (anything that imports
   `discovery.llm.client.call_anthropic` or `call_openai`).
 
@@ -252,9 +256,9 @@ topics, not loose guidelines.
 - **Wave 2 (pain classification LLM station).** No
   `discovery.llm.schemas.PainExtraction`, no `run_pain_extraction()`.
   This is a candidate for the next slice.
-- **The other ten sources.** Reddit and HackerNews are built. YouTube,
-  Apollo, Google Places, Yelp, OpenCorporates, trade directories,
-  NewsAPI, Listen Notes, Product Hunt, Census — all unbuilt.
+- **The other nine sources.** Reddit, HackerNews, and YouTube are built.
+  Apollo, Google Places, Yelp, OpenCorporates, trade directories, NewsAPI,
+  Listen Notes, Product Hunt, Census — all unbuilt.
 - **Waves 3 & 4 (per-company / per-tool enrichment).** Reviews, job
   postings, tech stack, etc. — none of those tables exist.
 - **Wave 5 (link, sanity-check, aggregate).** No cross-linking SQL,
@@ -311,6 +315,117 @@ The promotion path is a ~20-line `wave_0_task` wrapper around
 orchestrator-agnostic; no station code changes needed.
 
 ---
+
+## YouTube source adapter (2026-05-22) — what shipped & locked in
+
+Built from `docs/specs/2026-05-22-youtube-source-design.md` (approved,
+brainstorm + spec-review phases) via `docs/plans/2026-05-22-youtube-source.md`
+(5-chunk plan). TDD red->green->commit per task.
+
+**Problem solved:** Wave 1 had Reddit (pain/complaints) and HackerNews
+(capability/launches) but missed YouTube's distinct surface: practitioner
+pain expressed in video comments and pain-monologue video genres ("why I
+quit X", "X horror stories", "things nobody tells you about X"). Every
+`discovery run` now fans out to **Reddit AND HackerNews AND YouTube
+concurrently** -- wall time is `max(reddit, hn, youtube)`, not the sum.
+
+**New pieces (add to the map above):**
+
+- `src/discovery/sources/youtube.py` -- `YouTubeSource` with per-instance
+  `AsyncLimiter(5, 1)` (not a singleton), quota-aware hand-rolled retry
+  (injectable sleep, mirrors RedditSource -- NOT tenacity), three-step
+  fetch (`_search_all` -> `_enrich_videos` -> `_harvest_comments`), owned
+  `httpx.AsyncClient` closed via `aclose`. Pure helpers `build_search_url`,
+  `build_videos_url`, `build_comments_url`, `extract_video_ids`,
+  `video_to_raw_record`, `comment_to_raw_record`, `search_hit_to_raw_record`,
+  `viewcount_of`, `_redact_key` (key never logged in clear). Exceptions:
+  `YouTubeQuotaExceeded`, `YouTubeRateLimited`, `CommentsDisabled`.
+- `src/discovery/orchestrator/youtube.py` -- `_time_window_rfc3339` (RFC
+  3339 publishedAfter floor from JobSpec.time_window), `_compile_yt_queries`
+  (normalize/strip -> dedup case-insensitive -> publishedAfter -> cap at
+  `MAX_YT_QUERIES=10`, preserves LLM order), `youtube_queries_for_spec`
+  (deterministic no-LLM pain-shaped template fallback, 5 candidates),
+  `enqueue_youtube_task_for_job` (idempotent on `content_hash`).
+  Exports `enqueue_youtube_task_for_job` for use in `cli/run.py`.
+- `src/discovery/llm/schemas.py` -- `YouTubeQuerySpec` (`query`, `intent:
+  Literal["complaint","discussion"]`, `rationale`, all frozen). `JobPlan.
+  youtube_queries: list[YouTubeQuerySpec] = Field(default_factory=list)` --
+  permissive default (no `min_length`) is deliberate; YouTube under-
+  production must not raise `QueryExpansionError` and sink the Reddit plan.
+- `src/discovery/config/settings.py` -- `youtube_api_key: SecretStr | None
+  = None`. Dedicated setting (not reusing `google_api_key`) so the two
+  quotas stay independent.
+- `src/discovery/llm/stations/query_expansion.py` -- `_attach_hn_queries`
+  replaced by `_attach_extra_source_queries` (generalized carry-through
+  helper); 3-line wiring in `run_query_expansion` (capture `hn_queries` +
+  `youtube_queries` once after LLM call, reattach both once after `_finalize`).
+  The locked Reddit tail's `model_construct` sites stay byte-for-byte
+  Reddit-only -- untouched.
+- `src/discovery/llm/prompts/query_expansion.py` -- `VERSION` v7->v8;
+  new Kind 4 section (seven YouTube pain surfaces, emotion/pain-shaped
+  search templates, `intent` complaint vs discussion, "emit ~15-20, top 10
+  fire", graceful sparsity, one-industry illustration with re-derive guard,
+  `intent` does NOT route API params). `build_user_message` includes a
+  `youtube_queries` count line. Combined Wave-0 cache invalidated
+  automatically on v7->v8 bump.
+- `src/discovery/workers/__init__.py` -- `build_default_registry` registers
+  `"youtube": YouTubeSource(api_key=yt_key)` (lazy import +
+  `# noqa: PLC0415`). No-op when key unset.
+- `src/discovery/cli/run.py` -- three-way fan-out: enqueues
+  `enqueue_youtube_task_for_job`, captures `youtube_task_id`, adds third
+  `_run_task_in_own_session` branch to `asyncio.gather`, prints "3 task(s)
+  processed". Phase 1 comment updated to "four fields" / "ALL THREE".
+- `.claude/skills/youtube-source/SKILL.md` -- 12-item operational playbook
+  + Divergences section. Owner-authorized creation under `.claude/`.
+
+**Decisions locked in (don't re-litigate):**
+
+- **`MAX_YT_QUERIES = 10`** (owner-chosen). Fits the quota budget: ~9 full
+  jobs/day on the default 10,000 units. Do not raise without re-checking
+  unit arithmetic.
+- **`COMMENT_TOP_K = 50`** (owner-chosen). Harvest comments for the 50
+  highest-view enriched videos per job.
+- **Enrich with stats** (`videos.list` before comment harvest). View count
+  is the demand signal; Wave 2 cannot fetch it later. Bronze stores it
+  verbatim in the `youtube#video` body.
+- **Generalized carry-through invariant.** Any new non-Reddit source field
+  on `JobPlan` MUST be captured once in `run_query_expansion` and reattached
+  once via `_attach_extra_source_queries`. The locked Reddit tail must stay
+  byte-for-byte Reddit-only. Do NOT thread new fields through any of its
+  `model_construct` sites.
+- **Quota-aware retry + 429.** `quotaExceeded`/`dailyLimitExceeded` are
+  terminal (no retry). `rateLimitExceeded`/`userRateLimitExceeded`/429/5xx
+  are transient (retry with exponential backoff, injectable sleep). This
+  distinction is load-bearing.
+- **Dedicated `youtube_api_key`.** Not `google_api_key`. Keeps the two
+  quota pools independent.
+- **Two Bronze entity kinds.** `youtube#video` and `youtube#commentThread`
+  (plus rare `youtube#searchResult` fallback) all under `source="youtube"`.
+  Wave 2 must route on the `kind` field inside `body`.
+- **Per-instance limiter, not a singleton.** One consumer; no coordination
+  needed.
+- **`intent` does NOT route API params.** `order=relevance` for all
+  queries. `intent` is a generation-balance signal and a downstream tag
+  only.
+- **All three sources every run.** No flags. YouTube sparsity (empty
+  queries, unset key) degrades gracefully: task completes `done` with zero
+  records.
+
+**Heads-up for the next source (Kind 5):**
+`src/discovery/llm/prompts/query_expansion.py` is now **547 lines** --
+past the 500-line "propose a split" threshold (CLAUDE.md) but under the
+600-line cap. The next source added to the Wave-0 prompt will require
+restructuring the system prompt before adding more content -- e.g. compose
+`SYSTEM_PROMPT` from per-source string constants (`_REDDIT_SECTION`,
+`_HN_SECTION`, `_YOUTUBE_SECTION`, `_KIND4_SECTION`) instead of one flat
+multiline string. Plan this restructuring as a separate commit before
+adding the Kind 5 section.
+
+**Smoke verified (post-deploy):** [provisional -- real-key smoke run
+pending user adding `YOUTUBE_API_KEY` to `.env`. When unset, the YouTube
+task completes `done` with zero records (graceful no-op). Unit-test suite
+is fully green at the time of this commit: 380 tests, one known
+pre-existing failure `test_windows_style_worktree_path` only.]
 
 ## HackerNews source adapter (2026-05-20) — what shipped & locked in
 
@@ -543,7 +658,7 @@ No `fallback` / `QueryExpansionError` in any run. 229 unit tests green;
 
 ```bash
 $ uv sync                              # install deps
-$ uv run pytest                        # expect: 135 passed
+$ uv run pytest                        # expect: ~376 passed (1 known WSL-only failure)
 $ uv run ruff check .                  # expect: All checks passed!
 $ uv run ruff format --check .         # expect: all files formatted
 $ uv run mypy src/                     # expect: Success: no issues found
