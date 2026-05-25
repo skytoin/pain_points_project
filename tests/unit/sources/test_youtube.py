@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 from aiolimiter import AsyncLimiter
+from loguru import logger
 
 from discovery.sources.youtube import (
     CommentsDisabled,
@@ -547,3 +548,36 @@ class TestFetch:
                 await src.fetch({"queries": [_search_query(), _search_query(query="other")]})
         finally:
             await src.aclose()
+
+
+class TestLogging:
+    async def test_per_call_log_redacts_key_and_carries_fields(self) -> None:
+        """Per-call log line carries kind, redacted url, count; the raw
+        API key never appears in ANY captured log line."""
+        captured_extra: list[dict[str, Any]] = []
+        captured_text: list[str] = []
+
+        def sink(message: Any) -> None:
+            captured_extra.append(dict(message.record["extra"]))
+            captured_text.append(str(message))
+
+        sink_id = logger.add(sink, level="DEBUG")
+        try:
+            handler = _routing_handler(search_pages={"why": ["v1"]}, stats={"v1": "5"})
+            src = _src(handler)
+            try:
+                await src.fetch({"queries": [_search_query(query="why I quit")]})
+            finally:
+                await src.aclose()
+
+            call_logs = [c for c in captured_extra if c.get("kind") == "search"]
+            assert call_logs, f"no per-call log line found; captured: {captured_extra}"
+            log = call_logs[0]
+            assert log["count"] == 1
+            assert "key=REDACTED" in log["url"]
+            assert _KEY not in log["url"]
+            # The raw key must appear in NO captured log line (extra or text).
+            assert all(_KEY not in str(c) for c in captured_extra)
+            assert all(_KEY not in text for text in captured_text)
+        finally:
+            logger.remove(sink_id)
