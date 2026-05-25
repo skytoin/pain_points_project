@@ -4,9 +4,13 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
+import pytest
 from aiolimiter import AsyncLimiter
 
 from discovery.sources.youtube import (
+    CommentsDisabled,
+    YouTubeQuotaExceeded,
+    YouTubeSource,
     build_comments_url,
     build_search_url,
     build_videos_url,
@@ -132,3 +136,113 @@ class TestRecordHelpers:
     def test_viewcount_of_missing_defaults_zero(self) -> None:
         assert viewcount_of({"statistics": {}}) == 0
         assert viewcount_of({}) == 0
+
+
+def _error_response(status: int, reason: str) -> httpx.Response:
+    return httpx.Response(status, json={"error": {"errors": [{"reason": reason}], "code": status}})
+
+
+def _src(handler: Callable[[httpx.Request], httpx.Response], **kw: Any) -> YouTubeSource:
+    return YouTubeSource(
+        api_key=_KEY,
+        client=_client_from_handler(handler),
+        limiter=_fast_limiter(),
+        sleep=_noop_sleep,
+        **kw,
+    )
+
+
+class TestGetJson:
+    async def test_returns_parsed_json_on_200(self) -> None:
+        src = _src(lambda _: httpx.Response(200, json={"ok": True}))
+        try:
+            assert await src._get_json("https://x/") == {"ok": True}
+        finally:
+            await src.aclose()
+
+    async def test_quota_exceeded_raises_first_call_no_retry(self) -> None:
+        calls = {"n": 0}
+
+        def handler(_: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return _error_response(403, "quotaExceeded")
+
+        src = _src(handler)
+        try:
+            with pytest.raises(YouTubeQuotaExceeded):
+                await src._get_json("https://x/")
+            assert calls["n"] == 1
+        finally:
+            await src.aclose()
+
+    async def test_comments_disabled_raises_first_call(self) -> None:
+        src = _src(lambda _: _error_response(403, "commentsDisabled"))
+        try:
+            with pytest.raises(CommentsDisabled):
+                await src._get_json("https://x/")
+        finally:
+            await src.aclose()
+
+    async def test_transient_500_is_retried_then_succeeds(self) -> None:
+        calls = {"n": 0}
+
+        def handler(_: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return httpx.Response(500)
+            return httpx.Response(200, json={"ok": True})
+
+        src = _src(handler)
+        try:
+            assert await src._get_json("https://x/") == {"ok": True}
+            assert calls["n"] == 2  # retried once
+        finally:
+            await src.aclose()
+
+    async def test_rate_limit_is_retried(self) -> None:
+        calls = {"n": 0}
+
+        def handler(_: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _error_response(403, "rateLimitExceeded")
+            return httpx.Response(200, json={"ok": True})
+
+        src = _src(handler)
+        try:
+            assert await src._get_json("https://x/") == {"ok": True}
+            assert calls["n"] == 2
+        finally:
+            await src.aclose()
+
+    async def test_persistent_5xx_raises_after_budget(self) -> None:
+        calls = {"n": 0}
+
+        def handler(_: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return httpx.Response(503)
+
+        src = _src(handler, max_retries=2)
+        try:
+            with pytest.raises(httpx.HTTPStatusError):
+                await src._get_json("https://x/")
+            assert calls["n"] == 3  # 1 + 2 retries
+        finally:
+            await src.aclose()
+
+
+class TestAclose:
+    async def test_aclose_closes_owned_client(self) -> None:
+        src = YouTubeSource(api_key=_KEY, limiter=_fast_limiter())
+        assert not src._client.is_closed
+        await src.aclose()
+        assert src._client.is_closed
+
+    async def test_aclose_does_not_close_injected_client(self) -> None:
+        injected = httpx.AsyncClient()
+        try:
+            src = YouTubeSource(api_key=_KEY, client=injected, limiter=_fast_limiter())
+            await src.aclose()
+            assert not injected.is_closed
+        finally:
+            await injected.aclose()
