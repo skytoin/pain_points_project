@@ -154,6 +154,8 @@ def viewcount_of(video: dict[str, Any]) -> int:
 
 
 def _top_comment_snippet(thread: dict[str, Any]) -> dict[str, Any]:
+    """Navigate a commentThread to its topLevelComment.snippet dict; {} when
+    any nesting level is absent or the leaf is not a dict."""
     snippet = thread.get("snippet", {}).get("topLevelComment", {}).get("snippet", {})
     return snippet if isinstance(snippet, dict) else {}
 
@@ -313,6 +315,8 @@ class YouTubeSource(BaseSource):
                 logger.warning("youtube: rate-limited during comment harvest; stopping")
                 break
             threads = payload.get("items", [])
+            if not threads:
+                continue  # video has no comments returned; nothing to filter or log
             kept = [t for t in threads if keep_comment(t)]
             records.extend(comment_to_raw_record(t) for t in kept)
             logger.info(

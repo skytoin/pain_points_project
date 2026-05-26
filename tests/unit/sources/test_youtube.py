@@ -461,7 +461,18 @@ class TestFetch:
                             {
                                 "kind": "youtube#commentThread",
                                 "id": f"{vid}-c",
-                                "snippet": {"videoId": vid},
+                                "snippet": {
+                                    "videoId": vid,
+                                    "topLevelComment": {
+                                        "snippet": {
+                                            "textOriginal": (
+                                                "a substantive comment about a real "
+                                                "problem with the device"
+                                            ),
+                                            "likeCount": 0,
+                                        }
+                                    },
+                                },
                             }
                         ]
                     },
@@ -640,7 +651,18 @@ class TestFetch:
                             {
                                 "kind": "youtube#commentThread",
                                 "id": f"{vid}-c",
-                                "snippet": {"videoId": vid},
+                                "snippet": {
+                                    "videoId": vid,
+                                    "topLevelComment": {
+                                        "snippet": {
+                                            "textOriginal": (
+                                                "a substantive comment about a real "
+                                                "problem with the device"
+                                            ),
+                                            "likeCount": 0,
+                                        }
+                                    },
+                                },
                             }
                         ]
                     },
