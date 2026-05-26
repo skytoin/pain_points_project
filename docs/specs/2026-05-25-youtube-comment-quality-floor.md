@@ -115,9 +115,13 @@ for thread in payload.get("items", []):
 
 Everything else in the three-step fetch is unchanged. Video records are
 NOT affected (the floor is comment-only). Bronze still stores survivors
-verbatim. `viewcount_of`, quota handling, logging all unchanged — except
-the per-call comment log line should carry both counts (before/after
-floor), mirroring Reddit's `count_before_filter` / `count_after_filter`.
+verbatim. `viewcount_of`, quota handling unchanged.
+
+**Logging:** `_get_json`'s existing `_log_call` still logs the raw API
+item count per call. The before/after-floor split is computed in
+`_harvest_comments` (it owns the filter), so add a SEPARATE
+`logger.info("youtube comments filtered", video_id=..., kept=..., dropped=...)`
+after the per-video filter loop — do NOT change `_log_call`'s signature.
 
 ## 5. Edge cases
 
