@@ -62,10 +62,32 @@ Do not raise it without re-checking the per-job unit count.
 3. **`commentThreads.list`** (1 unit per video): harvested for the top
    `COMMENT_TOP_K = 50` videos ranked by view count. `commentsDisabled`
    on a video is a per-video skip (not an error); `quotaExceeded` stops
-   the loop early but keeps already-harvested comments.
+   the loop early but keeps already-harvested comments. Each returned
+   thread passes through the **comment-quality floor** before storage.
 
 The three helpers `_search_all`, `_enrich_videos`, `_harvest_comments`
 each stay under 60 lines. `fetch` itself is a thin 7-line orchestrator.
+
+### Comment-quality floor (`keep_comment`)
+
+`_harvest_comments` drops low-information comment threads BEFORE storing,
+the comment-level analog of Reddit's `keep_post()` (a cheap deterministic
+fetch-floor, NOT a violation of "Bronze stores raw" -- Bronze stores raw
+*survivors*). Rule:
+
+> keep if the top-level comment has at least one letter (any script, via
+> Unicode `str.isalpha()`) AND (`len(text) >= MIN_COMMENT_CHARS` OR
+> `likeCount >= MIN_COMMENT_LIKES`).
+
+Constants: `MIN_COMMENT_CHARS = 45`, `MIN_COMMENT_LIKES = 7`. This drops
+emoji/symbol-only reactions and short low-engagement one-liners
+("WOW", "nice video"), KEEPS non-English text, and rescues short-but-
+upvoted complaints. On the first IoT run it kept ~2,507 of 4,536 threads.
+It does NOT judge topical relevance or whether a comment is a real pain
+point -- that is semantic and stays Wave 2's job (a long off-topic
+comment still passes). Text is read from
+`snippet.topLevelComment.snippet.textOriginal` (fallback `textDisplay`);
+likes from `.likeCount`. Per-video `kept`/`dropped` counts are logged.
 
 ## 4. YouTube is full-text, not token-AND. No decomposition.
 

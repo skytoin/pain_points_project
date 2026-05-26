@@ -33,6 +33,8 @@ _API_BASE = "https://www.googleapis.com/youtube/v3"
 # --- constants ----------------------------------------------------------
 COMMENT_TOP_K = 50  # videos to harvest comments from, by view count
 VIDEOS_BATCH = 50  # max ids per videos.list call
+MIN_COMMENT_CHARS = 45  # keep comment threads with >= this many chars of text...
+MIN_COMMENT_LIKES = 7  # ...OR at least this many likes (rescue short-but-upvoted)
 _QUOTA_REASONS = {"quotaExceeded", "dailyLimitExceeded"}
 _RATE_REASONS = {"rateLimitExceeded", "userRateLimitExceeded"}
 
@@ -149,6 +151,39 @@ def viewcount_of(video: dict[str, Any]) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return 0
+
+
+def _top_comment_snippet(thread: dict[str, Any]) -> dict[str, Any]:
+    snippet = thread.get("snippet", {}).get("topLevelComment", {}).get("snippet", {})
+    return snippet if isinstance(snippet, dict) else {}
+
+
+def _comment_text(thread: dict[str, Any]) -> str:
+    """Top-level comment text, preferring textOriginal then textDisplay."""
+    snippet = _top_comment_snippet(thread)
+    text = snippet.get("textOriginal") or snippet.get("textDisplay") or ""
+    return str(text).strip()
+
+
+def _comment_likes(thread: dict[str, Any]) -> int:
+    """Top-level comment like count; 0 when absent or non-numeric."""
+    raw = _top_comment_snippet(thread).get("likeCount")
+    try:
+        return int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def keep_comment(thread: dict[str, Any]) -> bool:
+    """Cheap deterministic quality floor for a commentThread (analog of
+    keep_post). Drops emoji/symbol/number-only and short low-engagement
+    threads; keeps non-English text. Semantic relevance is Wave 2's job.
+    See docs/specs/2026-05-25-youtube-comment-quality-floor.md.
+    """
+    text = _comment_text(thread)
+    if not any(ch.isalpha() for ch in text):  # emoji/symbol/number-only -> drop
+        return False
+    return len(text) >= MIN_COMMENT_CHARS or _comment_likes(thread) >= MIN_COMMENT_LIKES
 
 
 class YouTubeSource(BaseSource):
@@ -277,7 +312,15 @@ class YouTubeSource(BaseSource):
             except YouTubeRateLimited:
                 logger.warning("youtube: rate-limited during comment harvest; stopping")
                 break
-            records.extend(comment_to_raw_record(thread) for thread in payload.get("items", []))
+            threads = payload.get("items", [])
+            kept = [t for t in threads if keep_comment(t)]
+            records.extend(comment_to_raw_record(t) for t in kept)
+            logger.info(
+                "youtube comments filtered",
+                video_id=vid,
+                kept=len(kept),
+                dropped=len(threads) - len(kept),
+            )
         return records
 
     async def _get_json(self, url: str, *, kind: str) -> dict[str, Any]:

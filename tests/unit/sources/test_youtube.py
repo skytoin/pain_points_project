@@ -14,11 +14,14 @@ from discovery.sources.youtube import (
     YouTubeQuotaExceeded,
     YouTubeRateLimited,
     YouTubeSource,
+    _comment_likes,
+    _comment_text,
     build_comments_url,
     build_search_url,
     build_videos_url,
     comment_to_raw_record,
     extract_video_ids,
+    keep_comment,
     search_hit_to_raw_record,
     video_to_raw_record,
     viewcount_of,
@@ -358,7 +361,18 @@ def _routing_handler(
                         {
                             "kind": "youtube#commentThread",
                             "id": f"{vid}-c1",
-                            "snippet": {"videoId": vid},
+                            "snippet": {
+                                "videoId": vid,
+                                "topLevelComment": {
+                                    "snippet": {
+                                        "textOriginal": (
+                                            "a substantive comment about a real "
+                                            "problem with the device"
+                                        ),
+                                        "likeCount": 0,
+                                    }
+                                },
+                            },
                         }
                     ]
                 },
@@ -706,6 +720,129 @@ class TestFetch:
             assert video_ids == set(batch1)  # batch 1 enriched verbatim
             assert fallback_ids == set(batch2)  # batch 2 stored as search hits
             assert all(c.startswith("a") for c in commented)  # no comments for un-enriched ids
+        finally:
+            await src.aclose()
+
+
+def _thread(
+    text: str | None = "x",
+    likes: int | str | None = 0,
+    tid: str = "ct1",
+    *,
+    use_display: bool = False,
+) -> dict[str, Any]:
+    """Build a youtube#commentThread with a top-level comment for filter tests."""
+    snip: dict[str, Any] = {}
+    if text is not None:
+        snip["textDisplay" if use_display else "textOriginal"] = text
+    if likes is not None:
+        snip["likeCount"] = likes
+    return {
+        "kind": "youtube#commentThread",
+        "id": tid,
+        "snippet": {"videoId": "v1", "topLevelComment": {"snippet": snip}},
+    }
+
+
+class TestKeepComment:
+    def test_drops_emoji_only(self) -> None:
+        assert keep_comment(_thread("\U0001f605\U0001f605", 0)) is False
+
+    def test_drops_symbol_and_number_only(self) -> None:
+        assert keep_comment(_thread("!!! 123 ???", 0)) is False
+
+    def test_drops_short_low_engagement(self) -> None:
+        assert keep_comment(_thread("nice video", 0)) is False  # 10 chars, 0 likes
+
+    def test_keeps_short_but_upvoted(self) -> None:
+        # 22 chars (< 45) but >= 7 likes -> rescued
+        assert keep_comment(_thread("this bricked my router", 7)) is True
+
+    def test_keeps_long_zero_likes(self) -> None:
+        assert keep_comment(_thread("a" * 45, 0)) is True
+
+    def test_boundary_44_dropped_45_kept(self) -> None:
+        assert keep_comment(_thread("a" * 44, 0)) is False
+        assert keep_comment(_thread("a" * 45, 0)) is True
+
+    def test_keeps_non_english_text(self) -> None:
+        # Cyrillic, >= 45 chars, isalpha() True for letters of any script
+        assert keep_comment(_thread("это " * 12, 0)) is True
+
+    def test_likes_as_string_parsed(self) -> None:
+        assert keep_comment(_thread("short", "9")) is True  # likeCount string -> 9 >= 7
+
+    def test_non_numeric_likes_treated_as_zero(self) -> None:
+        assert keep_comment(_thread("short", "lots")) is False
+
+    def test_missing_text_uses_display_fallback(self) -> None:
+        assert keep_comment(_thread("b" * 50, 0, use_display=True)) is True
+
+    def test_missing_top_level_comment_dropped(self) -> None:
+        thread = {"kind": "youtube#commentThread", "id": "x", "snippet": {"videoId": "v1"}}
+        assert keep_comment(thread) is False
+
+
+class TestCommentExtractors:
+    def test_text_prefers_original_over_display(self) -> None:
+        assert _comment_text(_thread("orig")) == "orig"
+
+    def test_text_strips_whitespace(self) -> None:
+        assert _comment_text(_thread("  hi  ")) == "hi"
+
+    def test_text_missing_returns_empty(self) -> None:
+        assert _comment_text({"snippet": {"topLevelComment": {"snippet": {}}}}) == ""
+
+    def test_likes_missing_is_zero(self) -> None:
+        assert _comment_likes({"snippet": {"topLevelComment": {"snippet": {}}}}) == 0
+
+    def test_likes_int_passthrough(self) -> None:
+        assert _comment_likes(_thread("x", 12)) == 12
+
+
+class TestHarvestFiltersJunk:
+    async def test_fetch_drops_low_quality_comments(self) -> None:
+        """End-to-end: junk threads are dropped before storage; good ones kept."""
+        good = "this is a substantive complaint about the device failing constantly"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/search?" in url:
+                return httpx.Response(
+                    200,
+                    json={"items": [{"id": {"kind": "youtube#video", "videoId": "v1"}}]},
+                )
+            if "/videos?" in url:
+                return httpx.Response(
+                    200,
+                    json={
+                        "items": [
+                            {"kind": "youtube#video", "id": "v1", "snippet": {},
+                             "statistics": {"viewCount": "1000"}}
+                        ]
+                    },
+                )
+            if "/commentThreads?" in url:
+                return httpx.Response(
+                    200,
+                    json={
+                        "items": [
+                            _thread("\U0001f605", 0, tid="junk-emoji"),
+                            _thread("WOW", 0, tid="junk-short"),
+                            _thread(good, 0, tid="keep-long"),
+                            _thread("short but liked", 9, tid="keep-liked"),
+                        ]
+                    },
+                )
+            return httpx.Response(404)
+
+        src = _src(handler)
+        try:
+            records = await src.fetch({"queries": [_search_query()]})
+            comment_ids = {
+                r.external_id for r in records if r.body.get("kind") == "youtube#commentThread"
+            }
+            assert comment_ids == {"keep-long", "keep-liked"}
         finally:
             await src.aclose()
 
